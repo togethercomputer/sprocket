@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools >= 80", "setuptools-scm >= 8.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sprocket"
+dynamic = ["version"]
+authors = [
+  {name="Sylvie Liberman", email="sylvie@together.ai"},
+  {name="Yorick van Pelt", email="yvanpelt@together.ai"},
+]
+description = "Together BYOC SDK"
+readme = "README.md"
+requires-python = ">=3.11"
+# todo: constrain
+dependencies = [
+    "aiofiles",
+    "httpx",
+    "orjson>=3.11.2",
+    "requests",
+    "rich",
+    "starlette",
+    "uvicorn",
+]
+
+[project.scripts]
+jig = "jig:jig"
+
+[project.urls]
+Homepage = "https://github.com/togethercomputer/sprocket"
+Issues = "https://github.com/togethercomputer/sprocket/issues"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.5",
+]
+
+[tool.setuptools]
+packages = ["sprocket"]
+py-modules = ["jig"]
+
+[tool.setuptools_scm]

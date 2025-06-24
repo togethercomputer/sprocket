@@ -1,0 +1,34 @@
+[project]
+name = "deepseek-ocr2-mo"
+version = "1.0.0"
+
+[tool.jig.deploy]
+description = "Test DeepSeek OCR2 input"
+gpu_type = "h100-80gb"
+gpu_count = 1
+cpu = 4
+memory = 64
+port = 8000
+min_replicas = 1
+max_replicas = 1
+command = [
+    "vllm",
+    "serve",
+    "deepseek-ai/DeepSeek-OCR-2",
+    "--port",
+    "8000",
+    "--host",
+    "0.0.0.0",
+    "--dtype",
+    "bfloat16",
+    "--limit-mm-per-prompt.image",
+    "5",
+    "--limit-mm-per-prompt.video",
+    "5",
+    "--tensor-parallel-size",
+    "2"
+]
+
+[tool.jig.deploy.environment_variables]
+VLLM_LOGGING_LEVEL="debug"
+NCCL_DEBUG="debug"

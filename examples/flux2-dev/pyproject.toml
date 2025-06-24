@@ -1,0 +1,37 @@
+[project]
+name = "sprocket-flux2-dev"
+version = "0.1.0"
+dependencies = [
+    "diffusers>=0.33.0",
+    "transformers>=4.44.0",
+    "torch>=2.0.0",
+    "torchvision",
+    "pillow",
+    "accelerate",
+    "bitsandbytes",
+    "safetensors",
+    "sprocket>=0.1.dev45"
+]
+
+[[tool.uv.index]]
+name = "together-pypi"
+url = "https://pypi.together.ai"
+
+[tool.uv.sources]
+sprocket = { index = "together-pypi" }
+
+[tool.jig.image]
+python_version = "3.11"
+cmd = "python3 run.py"
+auto_include_git = false
+copy = ["run.py"]
+
+[tool.jig.deploy]
+description = "Flux2-dev Image Generation with Sprocket"
+gpu_type = "h100-80gb"
+gpu_count = 1
+cpu = 4
+memory = 32
+port = 8000
+min_replicas = 1
+max_replicas = 1

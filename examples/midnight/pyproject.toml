@@ -1,0 +1,35 @@
+[project]
+name = "kaiko-midnight-patch"
+version = "0.1.0"
+dependencies = ["torch", "transformers", "torchvision", "pillow", "sprocket"]
+
+[[tool.uv.index]]
+name = "together-pypi"
+url = "https://pypi.together.ai/"
+
+[tool.uv.sources]
+sprocket = { index = "together-pypi" }
+
+[tool.jig]
+name = "kaiko-midnight-patch"
+
+[tool.jig.image]
+cmd = "python3 midnight.py"
+copy = ["midnight.py"]
+# this is a small model, bundle in docker image
+run = [
+    "--mount=type=cache,target=/root/.cache/huggingface uv tool run --from huggingface_hub hf download kaiko-ai/midnight --local-dir /app/kaiko-ai/midnight",
+]
+
+[tool.jig.image.environment]
+MODEL_PATH="kaiko-ai/midnight"
+
+[tool.jig.deploy]
+description = "Midnight model for patches"
+gpu_type = "h100-80gb"
+gpu_count = 1
+cpu = 4
+memory = 32
+port = 8000
+min_replicas = 1
+max_replicas = 1

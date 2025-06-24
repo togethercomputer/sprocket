@@ -1,0 +1,26 @@
+[project]
+name = "hello-world"
+version = "0.1.0"
+dependencies = ["sprocket"]
+
+[[tool.uv.index]]
+name = "together-pypi"
+url = "https://pypi.together.ai/"
+
+[tool.uv.sources]
+sprocket = { index = "together-pypi" }
+
+[tool.jig.image]
+python_version = "3.11"
+cmd = "python3 hello_world.py --queue"
+copy = ["hello_world.py"]
+
+[tool.jig.deploy]
+gpu_type = "none"
+gpu_count = 0
+cpu = 1
+memory = 2
+storage = 10
+port = 8000
+min_replicas = 1
+max_replicas = 1

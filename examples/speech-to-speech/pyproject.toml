@@ -1,0 +1,41 @@
+[project]
+name = "speech-to-speech"
+requires-python = "~=3.12.0"
+version = "0.1.0"
+dependencies = ["numpy", "sprocket"]
+
+[dependency-groups]
+production = [
+    "torch",
+    "transformers>=4.30.0",
+    "accelerate",
+    "torchaudio>=2.6.0",
+    "chatterbox-tts",
+]
+client = ["sounddevice", "requests>=2.32.5"]
+
+[[tool.uv.index]]
+name = "together-pypi"
+url = "https://pypi.together.ai/"
+
+[tool.uv.sources]
+sprocket = { index = "together-pypi" }
+
+[tool.jig]
+model_name = "speech-to-speech-test"
+
+[tool.jig.image]
+python_version = "3.12"
+system_packages = ["git", "libglib2.0-0"]
+copy = ["app.py"]
+cmd = "python app.py"
+
+[tool.jig.deploy]
+name = "speech-to-speech-test"
+description = "Test deployment of Speech to Speech pipeline"
+gpu_type = "h100-80gb"
+gpu_count = 4
+memory = 32
+cpu = 4
+min_replicas = 1
+max_replicas = 1
