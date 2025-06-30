@@ -1,0 +1,113 @@
+# Together API - BYOC Video Generation API Documentation
+
+### 
+# Generate Video
+# @description Kick off a video generation job
+# Returns a request_id that can be used to check status
+POST https://api.together.xyz/v1/videos/generations
+Authorization: Bearer $TOGETHER_API_KEY
+Content-Type: application/json
+
+{
+    "model": "org/model-name",
+    "payload": {
+        "prompt": "A person walking in a park",
+        "duration": 5,
+        "fps": 24,
+        "input_image": "s3://customer-bucket/inputs/image.jpg"
+    },
+    "priority": 1,
+    "info": {
+        "external_id": "customer-job-12345"
+    }
+}
+
+### 
+# Check Video Status
+# @description Check the status of a video generation job
+# Query parameters: model (required), request_id (required)
+GET https://api.together.xyz/v1/videos/status?model=hedra/hedra-2-0&request_id=01234567-89ab-cdef-0123-456789abcdef
+Authorization: Bearer $TOGETHER_API_KEY
+
+### 
+# Cancel Video Generation
+# @description Cancel a pending or running video generation job
+# Only works with newer request IDs (UUIDv7 format)
+POST https://api.together.xyz/v1/videos/cancel
+Authorization: Bearer $TOGETHER_API_KEY
+Content-Type: application/json
+
+{
+    "request_id": "01234567-89ab-cdef-0123-456789abcdef"
+}
+
+###
+# Worker: Fetch Next Job
+# @description Worker endpoint to retrieve the next job from the queue
+# Query parameters: model (required), timeout (optional), hostname (optional)
+GET https://api.together.ai/internal/v1/queue/retrieve?model=org/model-name&timeout=5s&hostname=worker-node-01
+Authorization: Bearer $TOGETHER_API_KEY
+
+### 
+# Worker: Update Job Status - Processing
+# @description Worker endpoint to update job status during processing
+POST https://api.together.ai/internal/v1/videos/status
+Authorization: Bearer $TOGETHER_API_KEY
+Content-Type: application/json
+
+{
+    "model": "org/model-name",
+    "request_id": "01234567-89ab-cdef-0123-456789abcdef",
+    "status": "running",
+    "payload": {
+        "data": "Processing frame 100/400"
+    },
+    "info": {
+        "external_id": "customer-job-12345",
+        "step": "frame_generation",
+        "progress": 25.0
+    }
+}
+
+### 
+# Worker: Complete Job Successfully
+# @description Worker endpoint to mark job as complete with output location
+POST https://api.together.ai/internal/v1/videos/status
+Authorization: Bearer $TOGETHER_API_KEY
+Content-Type: application/json
+
+{
+    "model": "org/model-name",
+    "request_id": "01234567-89ab-cdef-0123-456789abcdef",
+    "status": "done",
+    "payload": {
+        "id": "01234567-89ab-cdef-0123-456789abcdef",
+        "data": "s3://customer-bucket/outputs/video-01234567.mp4"
+    },
+    "info": {
+        "external_id": "customer-job-12345",
+        "processing_time_seconds": 240,
+        "progress": 100.0
+    }
+}
+
+### 
+# Worker: Mark Job as Failed
+# @description Worker endpoint to mark job as failed with error details
+POST https://api.together.ai/internal/v1/videos/status
+Authorization: Bearer $TOGETHER_API_KEY
+Content-Type: application/json
+
+{
+    "model": "hedra/hedra-2-0",
+    "request_id": "01234567-89ab-cdef-0123-456789abcdef",
+    "status": "failed",
+    "progress": 0,
+    "payload": {
+        "id": "01234567-89ab-cdef-0123-456789abcdef",
+        "data": "Failed to process input image: Invalid format or corrupted file"
+    },
+    "info": {
+        "external_id": "customer-job-12345",
+    }
+}
