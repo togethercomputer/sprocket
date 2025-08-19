@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import logging
+import mmap
 import math
 import os
 import time
@@ -48,23 +49,56 @@ class MidnightSprocket(Sprocket):
 
         logger.info(f"Model loaded successfully on {self.device}")
 
+    def predict(self, args: dict) -> dict:
+        task = args.get("task")
+        images = args.get("images")
+
+        if task not in ["classify", "segment"]:
+            raise ValueError("task must be 'classify' or 'segment'")
+
+        batch_tensor = self.load_and_transform_images(images)
+
+        with torch.inference_mode():
+            output = self.model(batch_tensor)
+
+        if task == "classify":
+            embeddings = self.extract_classification_embedding(output.last_hidden_state)
+        else:
+            embeddings = self.extract_segmentation_embedding(output.last_hidden_state)
+        fmt = args.get("format", "json")
+        if fmt == "json":
+            result = {"embeddings": embeddings.cpu().numpy().tolist()}
+        elif fmt == "npy,base64":
+            buf = io.BytesIO()
+            np.save(buf, embeddings.cpu().numpy())
+            buf.seek(0)
+            result = {"embeddings_npy_base64": base64.b64encode(buf.read())}
+        else:
+            raise ValueError('format must be "json" or "npy,base64"')
+        logging.info(
+            f"Took {st_2-st_1:.3f} forward pass, {st_3-st_2:.3f} extract, {time.time()-st_3:.3f} tolist, {time.time()-st_0:.3f} total"
+        )
+        return result
+
     def load_image_from_source(self, image_source: str) -> Image.Image:
         if not isinstance(image_source, str) or not image_source.strip():
             raise ValueError("images must be a non-empty list")
         if image_source.startswith("data:image"):
             data = image_source.split(",", 1)[1]
             image_data = base64.b64decode(data)
-        if image_source.startswith(("http://", "https://")):
+        elif image_source.startswith(("http://", "https://")):
             response = self.http_client.get(image_source)
             response.raise_for_status()
             image_data = response.content
+        else:
+            raise ValueError(
+                "Image source must be either a data URL (base64) or HTTP/HTTPS URL"
+            )
+
         f = open("/tmp/img", "wb+")
         f.truncate(len(image_data))
         mmap.mmap(f.fileno(), len(image_data)).write(image_data)
-        image_tensor = image.read_image("/tmp/img", mode=image.ImageReadMode.RGB)
-        raise ValueError(
-            "Image source must be either a data URL (base64) or HTTP/HTTPS URL"
-        )
+        return image.read_image("/tmp/img", mode=image.ImageReadMode.RGB)
 
     def load_and_transform_images(self, image_sources: list[str]) -> torch.Tensor:
         st = time.time()
@@ -87,41 +121,6 @@ class MidnightSprocket(Sprocket):
         batch_size, hidden_size, patch_grid = features.shape
         height = width = int(math.sqrt(patch_grid))
         return features.view(batch_size, hidden_size, height, width)
-
-    def predict(self, args: dict) -> dict:
-        st_0 = time.time()
-        task = args.get("task")
-        images = args.get("images")
-
-        if task not in ["classify", "segment"]:
-            raise ValueError("task must be 'classify' or 'segment'")
-
-        batch_tensor = self.load_and_transform_images(images)
-
-        st_1 = time.time()
-        with torch.inference_mode():
-            output = self.model(batch_tensor)
-        st_2 = time.time()
-
-        if task == "classify":
-            embeddings = self.extract_classification_embedding(output.last_hidden_state)
-        else:
-            embeddings = self.extract_segmentation_embedding(output.last_hidden_state)
-        st_3 = time.time()
-        fmt = args.get("format", "json")
-        if fmt == "json":
-            result = {"embeddings": embeddings.cpu().numpy().tolist()}
-        elif fmt == "npy,base64":
-            buf = io.BytesIO()
-            np.save(buf, embeddings.cpu().numpy())
-            buf.seek(0)
-            result = {"embeddings_npy_base64": base64.b64encode(buf.read())}
-        else:
-            raise ValueError('format must be "json" or "npy,base64"')
-        logging.info(
-            f"Took {st_2-st_1:.3f} forward pass, {st_3-st_2:.3f} extract, {time.time()-st_3:.3f} tolist, {time.time()-st_0:.3f} total"
-        )
-        return result
 
 
 if __name__ == "__main__":

@@ -62,7 +62,7 @@ class Runner:
         start_time = time.time()
         while not self.shutdown_event.is_set():
             try:
-                logger.info("waiting for job from remote queue")
+                logger.info(f"waiting for job from remote queue {self.model_name}")
                 headers = {"x-idle-time": str(time.time() - start_time)}
                 response = await self.client.get(
                     RETRIEVE_URL, headers=headers, params=params
@@ -73,7 +73,7 @@ class Runner:
                     return resp["data"]
                 logger.info("no job found in remote queue")
             except httpx.HTTPError as e:
-                logger.error(f"failed to get job from remote queue: {e}")
+                logger.error(f"failed to get job from remote queue: {repr(e)}")
             await asyncio.sleep(random.random() / 5)
         raise Exception("exit requested")
 
@@ -88,9 +88,8 @@ class Runner:
             "model": self.model_name,
             "request_id": request_id,
             "status": status,
+            "payload": outputs or {},
         }
-        if outputs:
-            data["payload"] = outputs
         if info:
             data["info"] = info
         logger.info(f"updating remote job status: {data}")
