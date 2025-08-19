@@ -24,10 +24,10 @@ define DEPLOYMENT_JSON
   "name": "Wan 2.1",
   "description": "Wan2.1 SQS example",
   "image": "$(REGISTRY_URL)/$(USERNAME)/wan2.1",
-  "environment_variables": {
-    "TOGETHER_API_BASE_URL": "$(API_URL)",
-    "TOGETHER_API_KEY": "$(TOGETHER_API_KEY)"
-  },
+  "environment_variables": [
+    {"name": "TOGETHER_API_BASE_URL", "value": "$(API_URL)"},
+    {"name": "TOGETHER_API_KEY", "value": "$(TOGETHER_API_KEY)"}
+  ],
   "min_replicas": 1,
   "max_replicas": 1,
   "port": 8000,

@@ -10,6 +10,7 @@ import httpx
 import torch
 import numpy as np
 from PIL import Image
+from torchvision.io import image
 from torchvision.transforms import v2
 from transformers import AutoModel
 from worker import Runner, Sprocket
@@ -53,11 +54,14 @@ class MidnightSprocket(Sprocket):
         if image_source.startswith("data:image"):
             data = image_source.split(",", 1)[1]
             image_data = base64.b64decode(data)
-            return Image.open(io.BytesIO(image_data)).convert("RGB")
         if image_source.startswith(("http://", "https://")):
             response = self.http_client.get(image_source)
             response.raise_for_status()
-            return Image.open(io.BytesIO(response.content)).convert("RGB")
+            image_data = response.content
+        f = open("/tmp/img", "wb+")
+        f.truncate(len(image_data))
+        mmap.mmap(f.fileno(), len(image_data)).write(image_data)
+        image_tensor = image.read_image("/tmp/img", mode=image.ImageReadMode.RGB)
         raise ValueError(
             "Image source must be either a data URL (base64) or HTTP/HTTPS URL"
         )

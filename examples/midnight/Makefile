@@ -2,12 +2,14 @@ API_URL?=https://api.together.xyz
 REGISTRY_URL?=registry.together.xyz
 TAG?=latest
 ifeq ($(origin USERNAME), undefined)
+# project id temporarily replaces username
 USERNAME?=$(shell curl -s -H "Authorization: Bearer $(TOGETHER_API_KEY)" "$(API_URL)/api/user/proof-data"  | jq -r '.projectId' | tr '[:upper:]' '[:lower:]')
 endif
 
 .PHONY: check
 check:
 	@test -n "$(TOGETHER_API_KEY)" || (echo "ERROR: TOGETHER_API_KEY not set" && exit 1)
+	# proj_id username failed
 	@test -n "$(USERNAME)" || (echo "ERROR: USERNAME not set" && exit 1)
 
 .docker_built: Dockerfile

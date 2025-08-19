@@ -1,0 +1,16 @@
+[project]
+name = "midnight"
+version = "0.1.0"
+
+[tool.jig]
+name = "kaiko-midnight-patch"
+
+[tool.jig.deploy]
+description = "Midnight model for patches"
+gpu_type = "h100-80gb"
+gpu_count = 1
+cpu = 4
+memory = "32Gi"
+port = 8000
+min_replicas = 1
+max_replicas = 1

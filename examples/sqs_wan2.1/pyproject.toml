@@ -1,0 +1,45 @@
+[project]
+name = "sqs-wan2.1"
+version = "0.1.0"
+dependencies = [
+    "diffusers==0.33.0",
+    "transformers>=4.44.0",
+    "para_attn",
+    "ftfy",
+    "accelerate",
+    "einops",
+    "omegaconf",
+    "pillow",
+    "ffmpeg-python",
+    "opencv-python",
+    "boto3",
+    "torch",
+    "requests",
+]
+
+[tool.jig]
+name = "sqs-wan2-1"
+
+[tool.jig.image]
+python_version = "3.11"
+system_packages = ["git", "libglib2.0-0", "libgl1-mesa-glx"]
+run = [
+    "mkdir http && touch http/health && echo \"utilization 0.0\" > http/metrics",
+]
+cmd = "torchrun --standalone --nproc_per_node=2 run_wan.py"
+auto_include_git = false
+copy = [
+    "server.py",
+    "run_wan.py",
+]
+
+[tool.jig.deploy]
+name = "sqs-wan2.1"
+description = "Wan2.1 Video Generation with SQS Integration"
+gpu_type = "h100-80gb"
+gpu_count = 2
+cpu = 4
+memory = "32Gi"
+port = 8000
+min_replicas = 1
+max_replicas = 1
