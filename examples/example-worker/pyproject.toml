@@ -1,0 +1,23 @@
+[project]
+#name = "sprocket-queue-test"
+name = "example-org/example-model-name"
+version = "0.1.0"
+dependencies = ["httpx", "orjson", "starlette", "uvicorn"]
+
+[tool.jig.image]
+python_version = "3.11"
+cmd = "python3 worker_snippet.py --queue"
+copy = ["worker_snippet.py", "sprocket.py"]
+
+[tool.jig.deploy]
+description = ""
+gpu_type = "none"
+gpu_count = 0
+cpu = 4
+memory = "32Gi"
+port = 8000
+min_replicas = 1
+max_replicas = 10
+[tool.jig.deploy.environment_variables]
+#TOGETHER_API_BASE_URL="api.together.ai"
+#TOGETHER_API_BASE_URL="api.qa.together.ai"
