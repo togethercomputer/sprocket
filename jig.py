@@ -74,7 +74,7 @@ class Config:
 
     model_name: Optional[str] = None
     image: ImageConfig = field(default_factory=ImageConfig)
-    deploy: DeployConfig = field(default_factory=lambda: DeployConfig(name="model"))
+    deploy: DeployConfig = field(default_factory=DeployConfig)
 
     @classmethod
     def load(cls, path: Path = Path("pyproject.toml")) -> "Config":
@@ -90,6 +90,7 @@ class Config:
         if not name:
             name = Path.cwd().name
             print(f"\N{PACKAGE} Name not set in pyproject.toml - defaulting to {name}")
+
         return cls(
             image=ImageConfig.from_dict(jig_config.get("image", {})),
             deploy=DeployConfig.from_dict(jig_config["deploy"]),
@@ -105,6 +106,7 @@ class State:
     """Persistent state"""
 
     username: Optional[str] = None
+    secrets: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path = Path(".jig.json")) -> "State":
@@ -216,7 +218,9 @@ def generate_dockerfile(config: Config) -> str:
     files_to_copy = get_files_to_copy(config)
     for file in files_to_copy:
         lines.append(f"COPY {file} {file}")
-    lines.append("RUN --mount=type=bind,source=.,target=/src cp /src/.worker.p* worker.py 2>/dev/null || true")
+    lines.append(
+        "RUN --mount=type=bind,source=.,target=/src cp /src/.worker.p* worker.py 2>/dev/null || true"
+    )
     lines.append("")
 
     # CMD
@@ -515,6 +519,86 @@ gpu_count = 1
 
         print("\N{CHECK MARK} Pushed")
 
+    @command()
+    def secrets(self):
+        """Manage deployment secrets"""
+        # maybe this would be cleaner with a sub-CLI
+        parser = argparse.ArgumentParser(prog="jig secrets")
+        subparsers = parser.add_subparsers(dest="action", help="Secret actions")
+
+        # set subcommand
+        set_parser = subparsers.add_parser("set", help="Set a secret")
+        set_parser.add_argument("name", help="Secret name")
+        set_parser.add_argument("value", help="Secret value")
+        set_parser.add_argument("--description", default="", help="Secret description")
+
+        # unset subcommand
+        unset_parser = subparsers.add_parser("unset", help="Remove a secret")
+        unset_parser.add_argument("name", help="Secret name to remove")
+
+        # list subcommand
+        subparsers.add_parser("list", help="List all secrets")
+
+        # Parse remaining args from sys.argv
+        import sys
+
+        # Skip past 'jig secrets' in argv
+        args_to_parse = sys.argv[2:] if len(sys.argv) > 2 else []
+        args = parser.parse_args(args_to_parse)
+
+        if not args.action:
+            parser.print_help()
+            return
+
+        if args.action == "set":
+            self._set_secret(args.name, args.value, args.description)
+        elif args.action == "unset":
+            self._unset_secret(args.name)
+        elif args.action == "list":
+            self._list_secrets()
+
+    def _set_secret(self, name: str, value: str, description: str):
+        """Set secret for the deployment"""
+        deployment_secret_name = f"{self.config.model_name}-{name}"
+        secret_data = {
+            "name": deployment_secret_name,
+            "description": description,
+            "value": value,
+        }
+        try:
+            # patch the secret if it exists already
+            self.client.request("GET", f"/v1/secrets/{deployment_secret_name}")
+            self.client.request(
+                "PATCH", f"/v1/secrets/{deployment_secret_name}", json=secret_data
+            )
+            print(f"\N{CHECK MARK} Updated secret: '{name}'")
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                print("\N{ROCKET} Creating new secret")
+                self.client.request("POST", "/v1/secrets", json=secret_data)
+                print(f"\N{CHECK MARK} Created secret: {name}")
+            else:
+                raise
+        self.state.secrets[name] = deployment_secret_name
+        self.state.save()
+
+    def _unset_secret(self, name: str):
+        """Unset the secret for the deployment"""
+        # FIXME: also delete secret from remote
+        if self.state.secrets.pop(name, ""):
+            self.state.save()
+            print("\N{CHECK MARK} Removed secret from deployment")
+        else:
+            print(f"Secret {name} is not set")
+
+    def _list_secrets(self):
+        """List all secrets for deployment"""
+        print(
+            f"\N{INFORMATION SOURCE} Following secrets are mapped to deployment {self.config.model_name}"
+        )
+        for secret_name in self.state.secrets.keys():
+            print(f"  - Secret '{secret_name}'")
+
     @command(
         arg("tag", default="latest", help="Image tag"),
         arg("build_only", type=bool, default=False, help="Build and push only"),
@@ -555,7 +639,12 @@ gpu_count = 1
             for k, v in self.config.deploy.environment_variables.items()
         ]
         env_vars.append({"name": "TOGETHER_API_BASE_URL", "value": API_URL})
-        env_vars.append({"name": "TOGETHER_API_KEY", "value": self.api_key})
+        if "TOGETHER_API_KEY" not in self.state.secrets:
+            self._set_secret("TOGETHER_API_KEY", self.api_key, "Auth key for queue API")
+
+        for name, secret_id in self.state.secrets.items():
+            env_vars.append({"name": name, "value_from_secret": secret_id})
+
         deploy_data["environment_variables"] = env_vars
 
         # Always use model name for deployment operations
@@ -637,7 +726,7 @@ gpu_count = 1
         print("\N{CHECK MARK} Submitted job")
         print(json.dumps(data, indent=2))
 
-        if watch and "requestId" in data:
+        if watch and data and "requestId" in data:
             print(f"\nWatching job {data['requestId']}...")
             self._watch_job_status(data["requestId"])
 

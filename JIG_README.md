@@ -40,7 +40,10 @@ port = 8000
 - `jig init` - Create initial config
 - `jig dockerfile` - Generate Dockerfile
 - `jig build` - Build image
-- `jig push` - Push to registry  
+- `jig push` - Push to registry
+- `jig set_secret --name secret_name --value secret_content --env_var env_var_name` - Create secret and map it to environment variable
+- `jig unset_secret --name secret_name` - Remove secret mapped to the deployment
+- `jig list_secrets` - List all secrets mapped to deployment
 - `jig deploy` - Build, push, and deploy
 - `jig deploy --image existing:tag` - Deploy existing image
 - `jig deploy --build-only` - Build and push only
