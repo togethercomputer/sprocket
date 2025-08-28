@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """jig - Simple deployment tool for Together AI"""
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests", "rich"]
+# ///
 
 import os
 import sys
@@ -25,12 +29,31 @@ except ImportError:
         print("ERROR: requests not available", file=sys.stderr)
         sys.exit(1)
 
+try:
+    from rich.pretty import pprint
+except ImportError:
+    try:
+        from pip._vendor.rich.pretty import pprint
+    except ImportError:
+
+        def pprint(data, **kwargs):
+            print(json.dumps(data, indent=2))
 
 # --- Configuration ---
 
-API_URL = os.getenv("API_URL", "api.together.xyz")
-REGISTRY_URL = os.getenv("REGISTRY_URL", "registry.together.xyz")
+TOGETHER_ENV = os.getenv("TOGETHER_ENV", "prod")
+if TOGETHER_ENV == "prod":
+    API_URL = "api.together.xyz"
+    REGISTRY_URL = "registry.together.xyz"
+elif TOGETHER_ENV == "qa":
+    API_URL = "api.qa.together.ai"
+    REGISTRY_URL = "registry.t6r-ai.dev"
+else:
+    print("ERROR: unknown together env", TOGETHER_ENV)
+    sys.exit(1)
+
 GENERATE_DOCKERFILE = os.getenv("GENERATE_DOCKERFILE", "0") != "0"
+DEBUG = os.getenv("TOGETHER_DEBUG", "").strip()[:1] in ("y", "1", "t")
 
 
 @dataclass
@@ -62,6 +85,7 @@ class DeployConfig:
     max_replicas: int = 1
     port: int = 8000
     environment_variables: dict[str, str] = field(default_factory=dict)
+    command: Optional[list[str]] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "DeployConfig":
@@ -73,6 +97,7 @@ class Config:
     """Main configuration from pyproject.toml"""
 
     model_name: Optional[str] = None
+    dockerfile: str = "Dockerfile"
     image: ImageConfig = field(default_factory=ImageConfig)
     deploy: DeployConfig = field(default_factory=DeployConfig)
 
@@ -94,6 +119,7 @@ class Config:
         return cls(
             image=ImageConfig.from_dict(jig_config.get("image", {})),
             deploy=DeployConfig.from_dict(jig_config["deploy"]),
+            dockerfile=jig_config.get("dockerfile", "Dockerfile"),
             model_name=name,
         )
 
@@ -138,6 +164,8 @@ class APIClient:
     def request(self, method: str, endpoint: str, **kwargs) -> Optional[dict]:
         """Make API request with error handling"""
         url = f"https://{API_URL}{endpoint}"
+        if DEBUG:
+            print(method, url)
         response = requests.request(method, url, headers=self.headers, **kwargs)
         response.raise_for_status()
         return response.json() if response.content else None
@@ -459,7 +487,7 @@ gpu_count = 1
         content = generate_dockerfile(self.config)
 
         # Write file
-        with open("Dockerfile", "w") as f:
+        with open(self.config.dockerfile, "w") as f:
             f.write(content)
 
         print("\N{CHECK MARK} Generated Dockerfile")
@@ -472,7 +500,7 @@ gpu_count = 1
         # Check if pyproject.toml is newer than Dockerfile
         if GENERATE_DOCKERFILE:
             pyproject_path = Path("pyproject.toml")
-            dockerfile_path = Path("Dockerfile")
+            dockerfile_path = Path(self.config.dockerfile)
 
             if (
                 pyproject_path.exists()
@@ -496,6 +524,8 @@ gpu_count = 1
 
         print(f"Building {image}")
         cmd = ["docker", "build", "--platform", "linux/amd64", "-t", image, "."]
+        if self.config.dockerfile != "Dockerfile":
+            cmd.extend(["-f", self.config.dockerfile])
         if subprocess.run(cmd).returncode != 0:
             raise RuntimeError("Build failed")
 
@@ -632,6 +662,8 @@ gpu_count = 1
             "gpu_count": self.config.deploy.gpu_count,
             "cpu": self.config.deploy.cpu,
         }
+        if self.config.deploy.command:
+            deploy_data["command"] = self.config.deploy.command
 
         # Add environment variables
         env_vars = [
@@ -673,7 +705,7 @@ gpu_count = 1
     def status(self):
         """Get deployment status"""
         data = self.client.request("GET", f"/v1/deployments/{self.config.model_name}")
-        print(json.dumps(data, indent=2))
+        pprint(data, indent_guides=False)
 
     @command()
     def logs(self):
@@ -724,7 +756,7 @@ gpu_count = 1
         )
 
         print("\N{CHECK MARK} Submitted job")
-        print(json.dumps(data, indent=2))
+        pprint(data, indent_guides=False)
 
         if watch and data and "requestId" in data:
             print(f"\nWatching job {data['requestId']}...")
@@ -744,7 +776,7 @@ gpu_count = 1
 
                 current_status = data.get("status", "")
                 if current_status != last_status:
-                    print(json.dumps(data, indent=2))
+                    pprint(data, indent_guides=False)
                     last_status = current_status
 
                 if current_status in ["done", "failed"]:
@@ -763,7 +795,7 @@ gpu_count = 1
             "GET",
             f"/v1/videos/generations/status?request_id={request_id}&model={self.config.model_name}",
         )
-        print(json.dumps(data, indent=2))
+        pprint(data, indent_guides=False)
 
     @command()
     def queue_status(self):
@@ -771,7 +803,7 @@ gpu_count = 1
         data = self.client.request(
             "GET", f"/internal/v1/queue/status?model={self.config.model_name}"
         )
-        print(json.dumps(data, indent=2))
+        pprint(data, indent_guides=False)
 
 
 def main():
