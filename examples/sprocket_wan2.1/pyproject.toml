@@ -1,0 +1,42 @@
+[project]
+name = "sprocket-wan2.1"
+version = "0.1.0"
+dependencies = [
+    "diffusers==0.33.0",
+    "transformers>=4.44.0",
+    "para_attn",
+    "ftfy",
+    "accelerate",
+    "einops",
+    "omegaconf",
+    "pillow",
+    "ffmpeg-python",
+    "opencv-python",
+    "torch",
+]
+
+[tool.jig.image]
+python_version = "3.11"
+#system_packages = ["libglib2.0-0", "libgl1-mesa-glx"]
+cmd = "torchrun --standalone --nproc_per_node=2 run_wan.py"
+auto_include_git = false
+copy = ["run_wan.py"]
+
+description = "Wan2.1 Video Generation with Sprocket"
+gpu_type = "h100-80gb"
+gpu_count = 2
+cpu = 4
+memory = "32Gi"
+port = 8000
+min_replicas = 1
+max_replicas = 1
+
+[tool.jig.deploy]
+description = "Wan2.1 Video Generation with Sprocket"
+gpu_type = "h100-80gb"
+gpu_count = 2
+cpu = 4
+memory = "32Gi"
+port = 8000
+min_replicas = 1
+max_replicas = 1

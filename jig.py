@@ -516,9 +516,9 @@ gpu_count = 1
             if not dockerfile_path.exists():
                 self.dockerfile()
 
-        build_dir_worker_path = Path("./.worker.py")
+        build_dir_worker_path = Path("./.sprocket.py")
         try:
-            shutil.copy(Path(__file__).parent / "worker.py", build_dir_worker_path)
+            shutil.copy(Path(__file__).parent / "sprocket" / "sprocket.py", build_dir_worker_path)
         except FileNotFoundError:
             pass
 

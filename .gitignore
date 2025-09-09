@@ -1,0 +1,4 @@
+*.pyc
+/sprocket.egg-info/
+/examples/*/.jig.json
+

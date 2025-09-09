@@ -14,7 +14,7 @@ from PIL import Image
 from torchvision.io import image
 from torchvision.transforms import v2
 from transformers import AutoModel
-from worker import Runner, Sprocket
+from sprocket.worker import Runner, Sprocket
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
