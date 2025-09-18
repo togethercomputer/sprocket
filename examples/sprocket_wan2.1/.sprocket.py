@@ -104,20 +104,10 @@ class Runner:
             await asyncio.sleep(random.random() / 5)
         raise Exception("exit requested")
 
-    async def upload_file(self, request_id: str, path: FileOutput) -> str:
-        try:
-            resp = await self.client.post(UPLOAD_URL, json={"filename": request_id + "-" + path.name})
-            await self.client.put(resp.json()["upload_url"]["url"], content=path.open("rb").read())
-        except:
-            traceback.print_exc()
-            raise
-        return f"{API_BASE}/v1/storage/{request_id}-{path.name}"
-
-    async def handle_output_upload(self, request_id: str, output: dict) -> dict:
-        return {
-            k: await self.upload_file(request_id, v) if isinstance(v, FileOutput) else v
-            for k, v in output.items()
-        }
+    async def upload_file(self, path: FileOutput) -> str:
+        resp = await self.client.post(UPLOAD_URL, json={"filename": path.name})
+        await self.client.put(resp.json()["upload_url"]["url"], content=path.open("rb").read())
+        return f"{API_BASE}/v1/storage/{path.name}"
 
     async def update_job_status(
         self,
@@ -160,7 +150,11 @@ class Runner:
             await self.update_job_status(request_id, "failed", info={"error": repr(e)})
         else:
             logger.info(f"Job {request_id} finished")
-            output = await self.handle_output_upload(request_id, output)
+            for k, v in output.items():
+                if isinstance(v, FileOutput):
+                    v = v.rename(f"{request_id}_{v.name}")
+                    output[k] = await self.upload_file(v)
+
             await self.update_job_status(request_id, "done", outputs=output)
         finally:
             self.busy = False
@@ -219,8 +213,6 @@ class Runner:
                     result = await self.sprocket.predict(data)
                 else:
                     result = self.sprocket.predict(data)
-                fake_request_id = uuid.uuid4()
-                result = await self.handle_output_upload(fake_request_id, result)
                 return OrjsonResponse(result)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)

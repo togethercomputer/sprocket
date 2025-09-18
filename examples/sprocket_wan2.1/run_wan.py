@@ -31,15 +31,15 @@ class WanSprocket(sprocket.Sprocket):
             height=480,
             width=832,
             num_frames=81,
-            num_inference_steps=30,
+            num_inference_steps=int(args.get("num_inference_steps", 30)),
             output_type="pil" if dist.get_rank() == 0 else "pt",
         ).frames[0]
 
         if dist.get_rank() == 0:
             print(f"Saving video to output.mp4")
             export_to_video(video, "output.mp4", fps=15)
-            return "output.mp4"
+            return {"url": sprocket.FileOutput("output.mp4")}
 
 
 if __name__ == "__main__":
-    sprocket.run(WanSprocket(), "example-org/example-model-name", use_torchrun=True)
+    sprocket.run(WanSprocket(), "wan-ai/wan2.1", use_torchrun=True)

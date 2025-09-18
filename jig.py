@@ -408,7 +408,7 @@ class CLI:
 
 
 class Jig:
-    """jig - Beautiful deployment tool for Together AI"""
+    """jig - Simple deployment tool for Together AI"""
 
     def __init__(self):
         self.config = Config.load()
@@ -771,7 +771,7 @@ gpu_count = 1
             try:
                 data = self.client.request(
                     "GET",
-                    f"/v1/videos/generations/status?request_id={request_id}&model={self.config.model_name}",
+                    f"/v1/videos/status?request_id={request_id}&model={self.config.model_name}",
                 )
 
                 current_status = data.get("status", "")
@@ -779,10 +779,10 @@ gpu_count = 1
                     pprint(data, indent_guides=False)
                     last_status = current_status
 
-                if current_status in ["done", "failed"]:
+                if current_status in ["done", "failed", "finished", "error"]:
                     break
 
-                time.sleep(3)
+                time.sleep(1)
 
             except KeyboardInterrupt:
                 print(f"\nStopped watching {request_id}")
@@ -793,7 +793,7 @@ gpu_count = 1
         """Get status of a specific video job"""
         data = self.client.request(
             "GET",
-            f"/v1/videos/generations/status?request_id={request_id}&model={self.config.model_name}",
+            f"/v1/videos/status?request_id={request_id}&model={self.config.model_name}",
         )
         pprint(data, indent_guides=False)
 
