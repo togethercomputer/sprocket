@@ -12,9 +12,11 @@ import subprocess
 import sys
 import time
 import traceback
+import uuid
 from collections import namedtuple
 from collections.abc import Awaitable
 from typing import Any, Optional, AsyncIterator
+from urllib.parse import urlparse
 
 import httpx
 import orjson
@@ -80,13 +82,13 @@ class AsyncSprocket:
 class Runner:
     def __init__(self, sprocket: Sprocket | AsyncSprocket, model_name: str) -> None:
         api_key = os.getenv("TOGETHER_API_KEY")
-        headers = {
+        self.headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
         if VERSION:
-            headers["x-worker-version"] = VERSION
-        self.client = httpx.AsyncClient(headers=headers, timeout=None)
+            self.headers["x-worker-version"] = VERSION
+        self.client = httpx.AsyncClient(headers=self.headers, timeout=None)
         self.sprocket = sprocket
         self.model_name = model_name
         self.busy = False
@@ -113,6 +115,18 @@ class Runner:
             await asyncio.sleep(random.random() / 5)
         raise Exception("exit requested")
 
+    async def download_file(self, url: str) -> pathlib.Path:
+        # replace with more sophisticated download later
+        dst = pathlib.Path("inputs/" + os.path.basename(urlparse(url).path))
+        req = self.client.build_request("GET", url)
+        req.headers = httpx.Headers(
+            {k: v for k, v in req.headers.items() if k not in self.headers}
+        )
+        resp = await self.client.send(req, follow_redirects=True)
+        resp.raise_for_status()
+        open(dst, "wb").write(resp.content)
+        return dst
+
     async def upload_file(self, request_id: str, path: FileOutput) -> str:
         try:
             resp = await self.client.post(
@@ -125,12 +139,6 @@ class Runner:
             traceback.print_exc()
             raise
         return f"{API_BASE}/v1/storage/{request_id}-{path.name}"
-
-    async def handle_output_upload(self, request_id: str, output: dict) -> dict:
-        return {
-            k: await self.upload_file(request_id, v) if isinstance(v, FileOutput) else v
-            for k, v in output.items()
-        }
 
     async def update_job_status(
         self,
@@ -159,24 +167,41 @@ class Runner:
         logger.error("failed to update job status after 3 retries")
         return False
 
+    async def handle_job(self, inputs: dict, request_id: str) -> dict:
+        self.busy = True
+        downloaded_paths = []
+        try:
+            # change urls in values to paths
+            for k, v in inputs.items():
+                if isinstance(v, str) and v.startswith("https://"):
+                    downloaded_paths.append(await self.download_file(v))
+                    inputs[k] = str(downloaded_paths[-1])
+            if isinstance(self.sprocket, AsyncSprocket):
+                output = await self.sprocket.predict(inputs)
+            else:
+                output = self.sprocket.predict(inputs)
+            return {
+                k: await self.upload_file(request_id, v)
+                if isinstance(v, FileOutput)
+                else v
+                for k, v in output.items()
+            }
+        finally:
+            self.busy = False
+            for path in downloaded_paths:
+                path.unlink(missing_ok=True)
+
     async def run_one_job(self) -> None:
         job = await self.get_job()
         request_id = job["request_id"]
-        self.busy = True
         try:
-            if isinstance(self.sprocket, AsyncSprocket):
-                output = await self.sprocket.predict(job["payload"])
-            else:
-                output = self.sprocket.predict(job["payload"])
+            output = await self.handle_job(job["payload"], request_id)
         except Exception as e:
             logger.error(f"Job {request_id} failed")
             await self.update_job_status(request_id, "failed", info={"error": repr(e)})
         else:
             logger.info(f"Job {request_id} finished")
-            output = await self.handle_output_upload(request_id, output)
             await self.update_job_status(request_id, "done", outputs=output)
-        finally:
-            self.busy = False
 
     async def run_queue_worker(self) -> None:
         try:
@@ -230,20 +255,13 @@ class Runner:
             if self.busy:
                 return JSONResponse({"error": "Worker is busy"}, status_code=503)
 
-            self.busy = True
             try:
                 data = await request.json()
-                if isinstance(self.sprocket, AsyncSprocket):
-                    result = await self.sprocket.predict(data)
-                else:
-                    result = self.sprocket.predict(data)
-                fake_request_id = uuid.uuid4()
-                result = await self.handle_output_upload(fake_request_id, result)
+                # change to uuidv7 in python3.14
+                result = await self.handle_job(data, request_id=str(uuid.uuid4()))
                 return OrjsonResponse(result)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
-            finally:
-                self.busy = False
 
         return app
 
