@@ -41,6 +41,14 @@ SHUTDOWN_REQUESTED = pathlib.Path(".shutdown_requested")
 SHUTDOWN_NOW = pathlib.Path(".shutdown_now")
 
 
+class MetricsEndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().find("/metrics") == -1
+
+
+logging.getLogger("uvicorn.access").addFilter(MetricsEndpointFilter())
+
+
 class FileOutput(pathlib.PosixPath):
     "Output file to be uploaded"
 
