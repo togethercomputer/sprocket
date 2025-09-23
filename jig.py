@@ -43,7 +43,7 @@ except ImportError:
 
 TOGETHER_ENV = os.getenv("TOGETHER_ENV", "prod")
 if TOGETHER_ENV == "prod":
-    API_URL = "api.together.xyz"
+    API_URL = "api.together.ai"
     REGISTRY_URL = "registry.together.xyz"
 elif TOGETHER_ENV == "qa":
     API_URL = "api.qa.together.ai"
@@ -81,6 +81,7 @@ class DeployConfig:
     gpu_type: str = "h100-80gb"
     gpu_count: int = 1
     cpu: int = 1
+    memory: int = 8
     min_replicas: int = 1
     max_replicas: int = 1
     port: int = 8000
@@ -661,6 +662,7 @@ gpu_count = 1
             "gpu_type": self.config.deploy.gpu_type,
             "gpu_count": self.config.deploy.gpu_count,
             "cpu": self.config.deploy.cpu,
+            "memory": self.config.deploy.memory,
         }
         if self.config.deploy.command:
             deploy_data["command"] = self.config.deploy.command
