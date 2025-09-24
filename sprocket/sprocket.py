@@ -4,17 +4,15 @@ import logging
 import multiprocessing.connection
 import os
 import pathlib
-import pickle
 import random
 import socket
-import struct
 import subprocess
 import sys
 import time
 import traceback
 from collections import namedtuple
 from collections.abc import Awaitable
-from typing import Any, Optional, AsyncIterator
+from typing import Any, Optional
 
 import httpx
 import orjson
@@ -22,6 +20,8 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
+
+from .async_connections import ConnectionManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
@@ -315,70 +315,6 @@ class ChildRunner:
             logger.error(f"Runner error: {e}")
 
 
-class AsyncConnection:
-    def __init__(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        self.reader = reader
-        self.writer = writer
-
-    async def recv(self) -> ChildToWorkerMessage:
-        # this might need to be in an asyncio.gather or have a timeout to exit cleanly
-        data = await self.reader.readexactly(4)
-        (size,) = struct.unpack("!i", data)
-        if size == -1:
-            # watch out! size > 0x7FFFFFFF
-            data = await self.reader.readexactly(8)
-            (size,) = struct.unpack("!Q", data)
-        data = await self.reader.readexactly(size)
-        return pickle.loads(data)
-
-    async def send(self, message: ChildToWorkerMessage) -> None:
-        data = pickle.dumps(message)
-        size = len(data)
-        if size < 2**31:
-            header = struct.pack("!i", size)
-        else:
-            header = struct.pack("!iQ", -1, size)
-        self.writer.write(header)
-        self.writer.write(data)
-        await self.writer.drain()
-
-
-class ConnectionManager:
-    def __init__(self) -> None:
-        self.conns: list[AsyncConnection] = []
-        self.connected = asyncio.Condition()
-        self.queue: asyncio.Queue[ChildToWorkerMessage] = asyncio.Queue()
-
-    async def run(self, sprocket_socket: str) -> None:
-        async def start_connection(
-            r: asyncio.StreamReader, w: asyncio.StreamWriter
-        ) -> None:
-            c = AsyncConnection(r, w)
-            self.conns.append(c)
-            async with self.connected:
-                self.connected.notify_all()
-            while not SHUTDOWN_NOW.exists():
-                await self.queue.put(await c.recv())
-
-        self.listener = await asyncio.start_unix_server(
-            start_connection, path=sprocket_socket
-        )
-
-    async def wait_for_connections(self, num_processes: int) -> None:
-        async with self.connected:
-            await self.connected.wait_for(lambda: len(self.conns) == num_processes)
-
-    async def broadcast(self, msg: Any) -> None:
-        for conn in self.conns:
-            await conn.send(msg)
-
-    async def gather(self) -> "AsyncIterator[ChildToWorkerMessage]":
-        while not SHUTDOWN_NOW.exists():
-            yield await self.queue.get()
-
-
 # fixme: rearrange runner so it's easier to extend like this instead of needing nested sprockets
 class TorchRunSprocket(AsyncSprocket):
     async def setup(self) -> None:
@@ -392,7 +328,7 @@ class TorchRunSprocket(AsyncSprocket):
         # run torchrun
         os.environ["SPROCKET_SOCKET"] = sprocket_socket
 
-        self.connection_manager = ConnectionManager()
+        self.connection_manager = ConnectionManager[ChildToWorkerMessage](shutdown_path=SHUTDOWN_NOW)
         await self.connection_manager.run(sprocket_socket)
 
         print("Starting worker processes")
