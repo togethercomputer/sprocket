@@ -437,6 +437,36 @@ class Jig:
         """Get full image name"""
         return f"{REGISTRY_URL}/{self.state.username}/{self.config.model_name}:{tag}"
 
+    def get_image_with_digest(self, tag: str = "latest") -> str:
+        """Get full image name tagged with digest"""
+        image_name = self.get_image(tag)
+        if tag != "latest":
+            return image_name
+
+        try:
+            # Use docker inspect to get the registry digest from RepoDigests
+            result = subprocess.run(
+                ["docker", "inspect", "--format={{index .RepoDigests 0}}", image_name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            image_url = result.stdout.strip()
+            if not image_url or image_url == "<no value>":
+                raise RuntimeError(
+                    f"No registry digest found for {image_name}. "
+                    "Make sure the image was pushed to registry first."
+                )
+
+            return image_url
+
+
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to get digest for {image_name}: {e.stderr.strip() if e.stderr else 'Docker command failed'}"
+            )
+
     @command()
     def init(self):
         """Initialize jig configuration"""
@@ -646,7 +676,9 @@ gpu_count = 1
             # Build and push
             self.build(tag)
             self.push(tag)
-            deployment_image = self.get_image(tag)
+
+            # Get image url pinning to digest
+            deployment_image = self.get_image_with_digest(tag)
 
         if build_only:
             print("\N{CHECK MARK} Build complete (--build-only)")
