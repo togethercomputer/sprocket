@@ -53,15 +53,12 @@ else:
     sys.exit(1)
 
 GENERATE_DOCKERFILE = os.getenv("GENERATE_DOCKERFILE", "0") != "0"
-<<<<<<< HEAD
 DEBUG = os.getenv("TOGETHER_DEBUG", "").strip()[:1] in ("y", "1", "t")
-=======
 AUTOSCALING_PROFILES = {
     "QueueBacklogPerWorker": [
         "targetValue"
     ]
 }
->>>>>>> f95d0e3 (autoscaling support)
 
 
 @dataclass
@@ -94,11 +91,8 @@ class DeployConfig:
     max_replicas: int = 1
     port: int = 8000
     environment_variables: dict[str, str] = field(default_factory=dict)
-<<<<<<< HEAD
     command: Optional[list[str]] = None
-=======
     autoscaling: dict[str, str] = field(default_factory=dict)
->>>>>>> f95d0e3 (autoscaling support)
 
     @classmethod
     def from_dict(cls, data: dict) -> "DeployConfig":
@@ -722,11 +716,8 @@ gpu_count = 1
             "gpu_type": self.config.deploy.gpu_type,
             "gpu_count": self.config.deploy.gpu_count,
             "cpu": self.config.deploy.cpu,
-<<<<<<< HEAD
             "memory": self.config.deploy.memory,
-=======
             "autoscaling": self.config.deploy.autoscaling,
->>>>>>> f95d0e3 (autoscaling support)
         }
         if self.config.deploy.command:
             deploy_data["command"] = self.config.deploy.command
