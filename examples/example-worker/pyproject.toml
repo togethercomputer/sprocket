@@ -21,3 +21,7 @@ max_replicas = 10
 
 [tool.jig.deploy.environment_variables]
 FOO="bar"
+
+[tool.jig.autoscaling]
+profile = "QueueBacklogPerWorker"
+targetValue = "1.05" # underprovision by 5%

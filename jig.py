@@ -53,7 +53,15 @@ else:
     sys.exit(1)
 
 GENERATE_DOCKERFILE = os.getenv("GENERATE_DOCKERFILE", "0") != "0"
+<<<<<<< HEAD
 DEBUG = os.getenv("TOGETHER_DEBUG", "").strip()[:1] in ("y", "1", "t")
+=======
+AUTOSCALING_PROFILES = {
+    "QueueBacklogPerWorker": [
+        "targetValue"
+    ]
+}
+>>>>>>> f95d0e3 (autoscaling support)
 
 
 @dataclass
@@ -86,7 +94,11 @@ class DeployConfig:
     max_replicas: int = 1
     port: int = 8000
     environment_variables: dict[str, str] = field(default_factory=dict)
+<<<<<<< HEAD
     command: Optional[list[str]] = None
+=======
+    autoscaling: dict[str, str] = field(default_factory=dict)
+>>>>>>> f95d0e3 (autoscaling support)
 
     @classmethod
     def from_dict(cls, data: dict) -> "DeployConfig":
@@ -116,6 +128,22 @@ class Config:
         if not name:
             name = Path.cwd().name
             print(f"\N{PACKAGE} Name not set in pyproject.toml - defaulting to {name}")
+
+        if autoscaling := jig_config.get("autoscaling", {}):
+            autoscaling_profile = autoscaling.get("profile", "")
+            if autoscaling_profile not in AUTOSCALING_PROFILES:
+                print(
+                    f"ERROR: Specify one of the supported autoscaling profiles: {AUTOSCALING_PROFILES.keys()}"
+                )
+                sys.exit(1)
+        
+            for required_param in AUTOSCALING_PROFILES[autoscaling_profile]:
+                if not autoscaling.get(required_param):
+                    print(f"ERROR: Autoscaling profile '{autoscaling_profile}' requires '{required_param}' to be set")
+                    sys.exit(1)
+
+            autoscaling["model"] = name
+            jig_config["deploy"]["autoscaling"] = autoscaling
 
         return cls(
             image=ImageConfig.from_dict(jig_config.get("image", {})),
@@ -694,7 +722,11 @@ gpu_count = 1
             "gpu_type": self.config.deploy.gpu_type,
             "gpu_count": self.config.deploy.gpu_count,
             "cpu": self.config.deploy.cpu,
+<<<<<<< HEAD
             "memory": self.config.deploy.memory,
+=======
+            "autoscaling": self.config.deploy.autoscaling,
+>>>>>>> f95d0e3 (autoscaling support)
         }
         if self.config.deploy.command:
             deploy_data["command"] = self.config.deploy.command
