@@ -48,6 +48,12 @@ if TOGETHER_ENV == "prod":
 elif TOGETHER_ENV == "qa":
     API_URL = "api.qa.together.ai"
     REGISTRY_URL = "registry.t6r-ai.dev"
+elif TOGETHER_ENV == "local":
+    if "TOGETHER_API_URL" not in os.environ or "TOGETHER_REGISTRY_URL" not in os.environ:
+        print("ERROR: TOGETHER_API_URL and TOGETHER_REGISTRY_URL must be set for local env", file=sys.stderr)
+        sys.exit(1)
+    API_URL = os.environ["TOGETHER_API_URL"]
+    REGISTRY_URL = os.environ["TOGETHER_REGISTRY_URL"]
 else:
     print("ERROR: unknown together env", TOGETHER_ENV)
     sys.exit(1)
@@ -93,6 +99,7 @@ class DeployConfig:
     environment_variables: dict[str, str] = field(default_factory=dict)
     command: Optional[list[str]] = None
     autoscaling: dict[str, str] = field(default_factory=dict)
+    health_check_path: str = "/health"
 
     @classmethod
     def from_dict(cls, data: dict) -> "DeployConfig":
@@ -719,6 +726,9 @@ gpu_count = 1
             "memory": self.config.deploy.memory,
             "autoscaling": self.config.deploy.autoscaling,
         }
+        # allow not setting health_check_path
+        if self.config.health_check_path:
+            deploy_data["health_check_path"] = self.config.health_check_path
         if self.config.deploy.command:
             deploy_data["command"] = self.config.deploy.command
 

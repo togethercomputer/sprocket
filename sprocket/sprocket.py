@@ -91,6 +91,7 @@ class Runner:
         self.model_name = model_name
         self.busy = False
         self.queue_mode = False
+        self.healthy = False
 
     async def get_job(self) -> dict:
         params = {"timeout": "5s", "model": self.model_name, "hostname": HOSTNAME}
@@ -194,15 +195,20 @@ class Runner:
                 self.sprocket.setup()
             if self.queue_mode:
                 asyncio.create_task(self.run_queue_worker())
+            self.healthy = True
 
         @app.on_event("shutdown")
         async def shutdown() -> None:
+            self.healthy = False
             SHUTDOWN_REQUESTED.touch()
             await self.client.aclose()
 
         @app.route("/health")
         async def health(request: Request) -> JSONResponse:
-            return JSONResponse({"status": "healthy"})
+            if self.healthy:
+                return JSONResponse({"status": "healthy"})
+            else:
+                return JSONResponse({"status": "unhealthy"}, status_code=503)
 
         @app.route("/metrics")
         async def metrics(request: Request) -> PlainTextResponse:
