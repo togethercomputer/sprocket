@@ -15,7 +15,7 @@ import traceback
 import uuid
 from collections import namedtuple
 from collections.abc import Awaitable
-from typing import Any, Optional, AsyncIterator
+from typing import Any, AsyncIterator, Optional, Type
 from urllib.parse import urlparse
 
 import httpx
@@ -60,7 +60,24 @@ class OrjsonResponse(JSONResponse):
         return orjson.dumps(content)
 
 
+class InputOutputProcessor:
+    def process_input_file(self, resp: httpx.Response, dst: pathlib.Path) -> None:
+        """
+        overwrite this to add processing after files are downloaded
+        """
+        open(dst, "wb").write(resp.content)
+
+    async def finalize(self, request_id: str, inputs: dict, outputs: dict) -> dict:
+        """
+        this function may be called concurrently with starting the next job
+        in torchrun mode, this is called in the parent process
+        """
+        return outputs
+
+
 class Sprocket:
+    processor: Type[InputOutputProcessor] = InputOutputProcessor
+
     def setup(self) -> None:
         raise NotImplementedError
 
@@ -72,6 +89,8 @@ class Sprocket:
 
 
 class AsyncSprocket:
+    processor: Type[InputOutputProcessor] = InputOutputProcessor
+
     async def setup(self) -> None:
         raise NotImplementedError
 
@@ -90,6 +109,8 @@ class Runner:
             self.headers["x-worker-version"] = VERSION
         self.client = httpx.AsyncClient(headers=self.headers, timeout=None)
         self.sprocket = sprocket
+        # create InputOutputProcessor, potentially overriden by sprocket
+        self.io_processor = sprocket.processor()
         self.model_name = model_name
         self.busy = False
         self.queue_mode = False
@@ -124,7 +145,8 @@ class Runner:
         )
         resp = await self.client.send(req, follow_redirects=True)
         resp.raise_for_status()
-        open(dst, "wb").write(resp.content)
+
+        self.io_processor.process_input_file(resp, dst)
         return dst
 
     async def upload_file(self, request_id: str, path: FileOutput) -> str:
@@ -494,6 +516,8 @@ def run(sprocket: Sprocket, name: str, use_torchrun: bool = False) -> None:
             sys.exit(1)
         ChildRunner(sprocket, name).run()
     elif use_torchrun:
+        # copy over the processor to the sprocket that will actually be used
+        TorchRunSprocket.processor = sprocket.processor
         asyncio.run(Runner(TorchRunSprocket(), name).run())
     else:
         asyncio.run(Runner(sprocket, name).run())
