@@ -185,11 +185,13 @@ class Runner:
                     return True
                 response.raise_for_status()
             except httpx.HTTPError as e:
-                logger.error(f"failed to update job status: {e}")
+                logger.error(f"failed to update job status: {repr(e)}")
         logger.error("failed to update job status after 3 retries")
         return False
 
     async def handle_job(self, inputs: dict, request_id: str) -> dict:
+        logger.info(f"queue inputs: {inputs}")
+        job_start_time = time.time()
         self.busy = True
         downloaded_paths = []
         try:
@@ -202,6 +204,7 @@ class Runner:
                 output = await self.sprocket.predict(inputs)
             else:
                 output = self.sprocket.predict(inputs)
+            logger.info("total predict run time: ", time.time() - job_start_time)
             return {
                 k: await self.upload_file(request_id, v)
                 if isinstance(v, FileOutput)
@@ -219,6 +222,7 @@ class Runner:
         try:
             output = await self.handle_job(job["payload"], request_id)
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Job {request_id} failed")
             await self.update_job_status(request_id, "failed", info={"error": repr(e)})
         else:
@@ -233,7 +237,7 @@ class Runner:
             if SHUTDOWN_REQUESTED.exists():
                 SHUTDOWN_NOW.touch()
         except Exception as e:
-            logger.error(f"Queue worker error: {e}")
+            logger.error(f"Queue worker error: {repr(e)}")
 
     def create_app(self) -> Starlette:
         app = Starlette()
@@ -268,11 +272,6 @@ class Runner:
 
         @app.route("/generate", methods=["POST"])
         async def generate(request: Request) -> JSONResponse:
-            if self.queue_mode:
-                return JSONResponse(
-                    {"error": "Worker is in queue mode"}, status_code=503
-                )
-
             # TODO: Future support for async/batching/concurrency
             if self.busy:
                 return JSONResponse({"error": "Worker is busy"}, status_code=503)
@@ -283,6 +282,7 @@ class Runner:
                 result = await self.handle_job(data, request_id=str(uuid.uuid4()))
                 return OrjsonResponse(result)
             except Exception as e:
+                traceback.print_exc()
                 return JSONResponse({"error": str(e)}, status_code=500)
 
         return app
@@ -366,7 +366,7 @@ class ChildRunner:
                         ChildToWorkerMessage(local_rank, "predict_done", None)
                     )
         except Exception as e:
-            logger.error(f"Runner error: {e}")
+            logger.error(f"Runner error: {repr(e)}")
 
 
 class AsyncConnection:
@@ -477,6 +477,21 @@ class TorchRunSprocket(AsyncSprocket):
             if setup_starts == setup_dones == self.num_processes:
                 break
         print("Worker setup complete")
+        # this can be useful for profiling with nsys
+        iter_count = int(os.getenv("RUN_FOR_PROFILING", "0"))
+        if iter_count:
+            await self.predict({})
+            times = []
+            for i in range(iter_count):
+                st = time.time()
+                await self.predict({})
+                times.append(time.time() - st)
+            print(f"===predict times===: {times}")
+
+            SHUTDOWN_REQUESTED.touch()
+            sys.exit(0)
+        else:
+            print("not profiling")
 
     async def predict(self, args: dict) -> dict:
         await self.connection_manager.broadcast(args)
