@@ -279,6 +279,10 @@ def generate_dockerfile(config: Config) -> str:
     lines.append(
         "RUN --mount=type=bind,source=.,target=/src cp /src/.worker.p* worker.py 2>/dev/null || true"
     )
+    # this tag will set the X-Worker-Version header, used for rollout monitoring
+    lines.append(
+        "RUN --mount=type=bind,source=.,target=/src git -C /src describe --tags --exact-match > VERSION"
+    )
     lines.append("")
 
     # CMD
