@@ -321,6 +321,10 @@ class ChildRunner:
                     self.conn.send(ChildToWorkerMessage(local_rank, "error", e))
                 else:
                     self.conn.send(ChildToWorkerMessage(local_rank, "output", output))
+                finally:
+                    self.conn.send(
+                        ChildToWorkerMessage(local_rank, "predict_done", None)
+                    )
         except Exception as e:
             logger.error(f"Runner error: {e}")
 
@@ -356,10 +360,11 @@ class AsyncConnection:
 
 
 class ConnectionManager:
-    def __init__(self) -> None:
+    def __init__(self, num_processes: int) -> None:
         self.conns: list[AsyncConnection] = []
         self.connected = asyncio.Condition()
         self.queue: asyncio.Queue[ChildToWorkerMessage] = asyncio.Queue()
+        self.num_processes = num_processes
 
     async def run(self, sprocket_socket: str) -> None:
         async def start_connection(
@@ -376,9 +381,9 @@ class ConnectionManager:
             start_connection, path=sprocket_socket
         )
 
-    async def wait_for_connections(self, num_processes: int) -> None:
+    async def wait_for_connections(self) -> None:
         async with self.connected:
-            await self.connected.wait_for(lambda: len(self.conns) == num_processes)
+            await self.connected.wait_for(lambda: len(self.conns) == self.num_processes)
 
     async def broadcast(self, msg: Any) -> None:
         for conn in self.conns:
@@ -393,16 +398,16 @@ class ConnectionManager:
 class TorchRunSprocket(AsyncSprocket):
     async def setup(self) -> None:
         sprocket_socket = f"/tmp/sprocket-{os.getpid()}"
-        num_processes = int(os.getenv("WORLD_SIZE", 1))
+        self.num_processes = int(os.getenv("WORLD_SIZE", 1))
         torchrun_args = [
             "--standalone",
             "--nnodes=1",
-            f"--nproc-per-node={num_processes}",
+            f"--nproc-per-node={self.num_processes}",
         ]
         # run torchrun
         os.environ["SPROCKET_SOCKET"] = sprocket_socket
 
-        self.connection_manager = ConnectionManager()
+        self.connection_manager = ConnectionManager(self.num_processes)
         await self.connection_manager.run(sprocket_socket)
 
         print("Starting worker processes")
@@ -416,7 +421,7 @@ class TorchRunSprocket(AsyncSprocket):
             close_fds=True,
         )
         print("Awaiting connections from workers")
-        await self.connection_manager.wait_for_connections(num_processes)
+        await self.connection_manager.wait_for_connections()
         setup_starts = 0
         setup_dones = 0
         print("Awaiting worker setup")
@@ -429,20 +434,28 @@ class TorchRunSprocket(AsyncSprocket):
                 raise msg.arg
             else:
                 raise ValueError(f"invalid msg {msg}")
-            if setup_starts == setup_dones == num_processes:
+            if setup_starts == setup_dones == self.num_processes:
                 break
         print("Worker setup complete")
 
     async def predict(self, args: dict) -> dict:
         await self.connection_manager.broadcast(args)
+        predict_dones = 0
+        result = None
+        err = None
         async for msg in self.connection_manager.gather():
-            if not msg.arg:
-                continue  # ignore ranks returning None
             if msg.type == "error":
-                raise msg.arg
+                err = msg.arg  # we will raise the last error we receive
             if msg.type == "output":
-                # FIXME: get ready event from every event before submitting new jobs so we catch errors + outputs
-                return msg.arg
+                if msg.arg:  # ignore ranks returning None
+                    result = msg.arg
+            elif msg.type == "predict_done":
+                predict_dones += 1
+            if predict_dones == self.num_processes:
+                if err:
+                    raise err
+                if result:
+                    return result
         raise Exception("shutting down")
         # also handle upload
         # self.update_job_status(msg)
