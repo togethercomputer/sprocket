@@ -115,8 +115,12 @@ class Runner:
 
     async def upload_file(self, request_id: str, path: FileOutput) -> str:
         try:
-            resp = await self.client.post(UPLOAD_URL, json={"filename": request_id + "-" + path.name})
-            await self.client.put(resp.json()["upload_url"]["url"], content=path.open("rb").read())
+            resp = await self.client.post(
+                UPLOAD_URL, json={"filename": request_id + "-" + path.name}
+            )
+            await self.client.put(
+                resp.json()["upload_url"]["url"], content=path.open("rb").read()
+            )
         except:
             traceback.print_exc()
             raise
