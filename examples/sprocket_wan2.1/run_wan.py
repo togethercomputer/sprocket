@@ -24,7 +24,7 @@ class WanSprocket(sprocket.Sprocket):
         para_mesh = init_context_parallel_mesh(self.pipe.device.type)
         parallelize_pipe(self.pipe, mesh=para_mesh)
 
-    def predict(self, args: dict) -> Optional[str]:
+    def predict(self, args: dict) -> Optional[dict]:
         video = self.pipe(
             prompt=args["prompt"],
             negative_prompt="",

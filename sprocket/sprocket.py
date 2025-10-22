@@ -186,7 +186,7 @@ class Runner:
     async def download_file(self, url: str) -> pathlib.Path:
         # replace with more sophisticated download later
         dst = pathlib.Path("inputs/" + os.path.basename(urlparse(url).path))
-        resp = self.download_client.get(url)
+        resp = await self.download_client.get(url)
         resp.raise_for_status()
         self.io_processor.process_input_file(resp, dst)
         return dst
@@ -206,10 +206,10 @@ class Runner:
                 output = await self.sprocket.predict(inputs)
             else:
                 output = self.sprocket.predict(inputs)
-            logger.info("total predict run time: {time.time() - job_start_time}")
+            logger.info(f"total predict run time: {time.time() - job_start_time}")
             output = await self.io_processor.finalize(request_id, inputs, output)
             return {
-                k: await self.upload_file(request_id, v)
+                k: await self.queue_client.upload_file(request_id, v)
                 if isinstance(v, FileOutput)
                 else v
                 for k, v in output.items()
@@ -263,14 +263,12 @@ class Runner:
         async def shutdown() -> None:
             self.healthy = False
             SHUTDOWN_REQUESTED.touch()
-            await self.client.aclose()
 
         @app.route("/health")
         async def health(request: Request) -> JSONResponse:
             if self.healthy:
                 return JSONResponse({"status": "healthy"})
-            else:
-                return JSONResponse({"status": "unhealthy"}, status_code=503)
+            return JSONResponse({"status": "unhealthy"}, status_code=503)
 
         @app.route("/metrics")
         async def metrics(request: Request) -> PlainTextResponse:
@@ -445,7 +443,7 @@ class ConnectionManager:
 class TorchRunSprocket(AsyncSprocket):
     async def setup(self) -> None:
         sprocket_socket = f"/tmp/sprocket-{os.getpid()}"
-        self.num_processes = int(os.getenv("WORLD_SIZE", 1))
+        self.num_processes = int(os.getenv("WORLD_SIZE", "1"))
         torchrun_args = [
             "--standalone",
             "--nnodes=1",

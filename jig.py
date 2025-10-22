@@ -5,16 +5,17 @@
 # dependencies = ["requests", "rich"]
 # ///
 
-import os
-import sys
+import argparse
 import json
+import os
 import shlex
 import shutil
-import argparse
 import subprocess
-from pathlib import Path
+import sys
+import time
 from dataclasses import asdict, dataclass, field
-from typing import Optional, Any
+from pathlib import Path
+from typing import Any, Optional
 
 try:
     import tomllib
@@ -48,23 +49,16 @@ if TOGETHER_ENV == "prod":
 elif TOGETHER_ENV == "qa":
     API_URL = "api.qa.together.ai"
     REGISTRY_URL = "registry.t6r-ai.dev"
-elif TOGETHER_ENV == "local":
-    if "TOGETHER_API_URL" not in os.environ or "TOGETHER_REGISTRY_URL" not in os.environ:
-        print("ERROR: TOGETHER_API_URL and TOGETHER_REGISTRY_URL must be set for local env", file=sys.stderr)
-        sys.exit(1)
-    API_URL = os.environ["TOGETHER_API_URL"]
-    REGISTRY_URL = os.environ["TOGETHER_REGISTRY_URL"]
+elif TOGETHER_ENV == "dev":
+    API_URL = os.getenv("TOGETHER_API_URL")
+    REGISTRY_URL = os.getenv("TOGETHER_REGISTRY_URL")
+    assert API_URL and REGISTRY_URL, "API_URL and REGISTRY_URL must be set in dev mode"
 else:
     print("ERROR: unknown together env", TOGETHER_ENV)
     sys.exit(1)
 
 GENERATE_DOCKERFILE = os.getenv("GENERATE_DOCKERFILE", "0") != "0"
 DEBUG = os.getenv("TOGETHER_DEBUG", "").strip()[:1] in ("y", "1", "t")
-AUTOSCALING_PROFILES = {
-    "QueueBacklogPerWorker": [
-        "targetValue"
-    ]
-}
 
 
 @dataclass
@@ -131,18 +125,8 @@ class Config:
             print(f"\N{PACKAGE} Name not set in pyproject.toml - defaulting to {name}")
 
         if autoscaling := jig_config.get("autoscaling", {}):
-            autoscaling_profile = autoscaling.get("profile", "")
-            if autoscaling_profile not in AUTOSCALING_PROFILES:
-                print(
-                    f"ERROR: Specify one of the supported autoscaling profiles: {AUTOSCALING_PROFILES.keys()}"
-                )
-                sys.exit(1)
-        
-            for required_param in AUTOSCALING_PROFILES[autoscaling_profile]:
-                if not autoscaling.get(required_param):
-                    print(f"ERROR: Autoscaling profile '{autoscaling_profile}' requires '{required_param}' to be set")
-                    sys.exit(1)
-
+            # TODO: validate autoscaling once there are profiles other than QueueBacklogPerWorker
+            # maybe this should be in tool.jig.deploy.autoscaling directly
             autoscaling["model"] = name
             jig_config["deploy"]["autoscaling"] = autoscaling
 
@@ -411,7 +395,7 @@ class CLI:
 
     def run(self):
         """Parse arguments and run command"""
-        args = self.parser.parse_args()
+        args, _ = self.parser.parse_known_args()
 
         if not args.command:
             self.parser.print_help()
@@ -493,8 +477,6 @@ class Jig:
                 )
 
             return image_url
-
-
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"Failed to get digest for {image_name}: {e.stderr.strip() if e.stderr else 'Docker command failed'}"
@@ -527,7 +509,6 @@ system_packages = ["git", "libglib2.0-0"]
 cmd = "python app.py"
 
 [tool.jig.deploy]
-name = "my-model"
 description = "My model deployment"
 gpu_type = "h100-80gb"
 gpu_count = 1
@@ -582,7 +563,10 @@ gpu_count = 1
 
         build_dir_worker_path = Path("./.sprocket.py")
         try:
-            shutil.copy(Path(__file__).parent / "sprocket" / "sprocket.py", build_dir_worker_path)
+            shutil.copy(
+                Path(__file__).parent / "sprocket" / "sprocket.py",
+                build_dir_worker_path,
+            )
         except FileNotFoundError:
             pass
 
@@ -633,10 +617,7 @@ gpu_count = 1
         # list subcommand
         subparsers.add_parser("list", help="List all secrets")
 
-        # Parse remaining args from sys.argv
-        import sys
-
-        # Skip past 'jig secrets' in argv
+        # Parse remaining args from sys.argv, skipping past 'jig secrets' in argv
         args_to_parse = sys.argv[2:] if len(sys.argv) > 2 else []
         args = parser.parse_args(args_to_parse)
 
@@ -731,8 +712,8 @@ gpu_count = 1
             "autoscaling": self.config.deploy.autoscaling,
         }
         # allow not setting health_check_path
-        if self.config.health_check_path:
-            deploy_data["health_check_path"] = self.config.health_check_path
+        if self.config.deploy.health_check_path:
+            deploy_data["health_check_path"] = self.config.deploy.health_check_path
         if self.config.deploy.command:
             deploy_data["command"] = self.config.deploy.command
 
@@ -835,8 +816,6 @@ gpu_count = 1
 
     def _watch_job_status(self, request_id: str):
         """Watch job status until completion"""
-        import time
-
         last_status = None
         while True:
             try:

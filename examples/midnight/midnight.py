@@ -14,7 +14,7 @@ from PIL import Image
 from torchvision.io import image
 from torchvision.transforms import v2
 from transformers import AutoModel
-from sprocket.worker import Runner, Sprocket
+from sprocket.sprocket import Runner, Sprocket
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,9 +75,6 @@ class MidnightSprocket(Sprocket):
             result = {"embeddings_npy_base64": base64.b64encode(buf.read())}
         else:
             raise ValueError('format must be "json" or "npy,base64"')
-        logging.info(
-            f"Took {st_2-st_1:.3f} forward pass, {st_3-st_2:.3f} extract, {time.time()-st_3:.3f} tolist, {time.time()-st_0:.3f} total"
-        )
         return result
 
     def load_image_from_source(self, image_source: str) -> Image.Image:

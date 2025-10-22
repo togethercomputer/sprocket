@@ -41,7 +41,7 @@ class Worker:
         dist.init_process_group()
         torch.cuda.set_device(dist.get_rank())
 
-        # if running in docker and not kuberentes, submit a job for testing
+        # if running in docker and not kubernetes, submit a job for testing
         if dist.get_rank() == 0 and pathlib.Path("/.dockerenv").exists():
             submit_job_for_testing()
 
@@ -92,7 +92,7 @@ class Worker:
         ).frames[0]
 
         if dist.get_rank() == 0:
-            assert self.sqs_client, receipt_handle
+            assert self.sqs_client and receipt_handle
             print(f"Saving video to wan-{receipt_handle}.mp4")
             export_to_video(video, f"wan-{receipt_handle}.mp4", fps=15)
             # you would handle upload here
@@ -101,7 +101,6 @@ class Worker:
                 QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle
             )
             server.set_utilization(busy=False)
-            open("metrics", "w").write("utilization 0.0\n")
 
     def run(self):
         try:
