@@ -35,6 +35,15 @@ gpu_type = "h100-80gb"
 port = 8000
 ```
 
+Instead of `pyproject.toml`, you can also configure jig through `jig.toml`.
+This config file is only used when the `[tool.jig]` section is absent from the `pyproject.toml` file.
+
+Alternatively, you can specify any custom configuration file using the `--config` argument:
+
+```bash
+jig --config path/to/custom-config.toml <command>
+```
+
 ## Commands
 
 - `jig init` - Create initial config
@@ -60,7 +69,7 @@ port = 8000
 
 Files are copied based on git tracking (repo must be clean) plus any explicit `copy` entries.
 
-The Dockerfile is regenerated when `pyproject.toml` changes. Otherwise builds are unconditional like `fly deploy`.
+The Dockerfile is regenerated when the config file changes. Otherwise builds are unconditional like `fly deploy`.
 
 ## State
 

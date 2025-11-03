@@ -118,11 +118,25 @@ class Config:
         with open(path, "rb") as f:
             data = tomllib.load(f)
 
-        jig_config = data.get("tool", {}).get("jig", {})
-        name = jig_config.get("name") or data.get("project", {}).get("name", "")
+        if path.name == "pyproject.toml":
+            jig_config = data.get("tool", {}).get("jig", {})
+        else:
+            jig_config = data
+
+        name = jig_config.get("name")
+        if name is None:
+            pyproject_data = None
+            if path.name == "pyproject.toml":
+                pyproject_data = data
+            elif Path("pyproject.toml").exists():
+                with Path("pyproject.toml").open("rb") as f:
+                    pyproject_data = tomllib.load(f)
+            if pyproject_data:
+                name = pyproject_data.get("project", {}).get("name", "")
+
         if not name:
-            name = Path.cwd().name
-            print(f"\N{PACKAGE} Name not set in pyproject.toml - defaulting to {name}")
+            name = path.resolve().parent.name
+            print(f"\N{PACKAGE} Name not set in config file or pyproject.toml - defaulting to {name}")
 
         if autoscaling := jig_config.get("autoscaling", {}):
             # TODO: validate autoscaling once there are profiles other than QueueBacklogPerWorker
@@ -145,22 +159,24 @@ class Config:
 class State:
     """Persistent state"""
 
+    _config_dir: Path
     username: Optional[str] = None
     secrets: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, path: Path = Path(".jig.json")) -> "State":
-        """Load state from file"""
+    def load(cls, config_dir: Path) -> "State":
+        path = config_dir / ".jig.json"
         try:
             with open(path) as f:
-                return cls(**json.load(f))
+                return cls(_config_dir=config_dir, **json.load(f))
         except FileNotFoundError:
-            return cls()
+            return cls(_config_dir=config_dir)
 
-    def save(self, path: Path = Path(".jig.json")):
-        """Save state to file"""
+    def save(self):
+        path = self._config_dir / ".jig.json"
+        data = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
         with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+            json.dump(data, f, indent=2)
 
 
 # --- API Client ---
@@ -355,6 +371,12 @@ class CLI:
         self.parser = argparse.ArgumentParser(
             description=app_class.__doc__ or "CLI Application"
         )
+        # Add global --config argument
+        self.parser.add_argument(
+            "--config",
+            type=str,
+            help="Configuration file path (overrides default)"
+        )
         self.subparsers = self.parser.add_subparsers(
             dest="command", help="Available commands"
         )
@@ -402,7 +424,7 @@ class CLI:
             return
 
         # Create app instance
-        app = self.app_class()
+        app = self.app_class(config_path=args.config)
 
         # Find and call method
         method = getattr(app, args.command, None)
@@ -428,9 +450,22 @@ class CLI:
 class Jig:
     """jig - Simple deployment tool for Together AI"""
 
-    def __init__(self):
-        self.config = Config.load()
-        self.state = State.load()
+    def __init__(self, config_path: Optional[str] = None):
+        if config_path:
+            config_file = Path(config_path)
+            if not config_file.exists():
+                print(f"ERROR: Configuration file not found: {config_path}", file=sys.stderr)
+                sys.exit(1)
+            self.config_path = config_file
+            self.config = Config.load(config_file)
+        else:
+            self.config_path = self.find_config()
+            if not self.config_path:
+                print("ERROR: No pyproject.toml or jig.toml found, use --config to specify a config path.", file=sys.stderr)
+                sys.exit(1)
+            self.config = Config.load(self.config_path)
+
+        self.state = State.load(self.config_path.parent)
 
         # Get API key
         self.api_key = os.getenv("TOGETHER_API_KEY", "")
@@ -448,7 +483,7 @@ class Jig:
 
         # Set model name
         if not self.config.model_name:
-            self.config.model_name = Path.cwd().name
+            self.config.model_name = self.config_path.resolve().parent.name
 
     def get_image(self, tag: str = "latest") -> str:
         """Get full image name"""
@@ -481,6 +516,21 @@ class Jig:
             raise RuntimeError(
                 f"Failed to get digest for {image_name}: {e.stderr.strip() if e.stderr else 'Docker command failed'}"
             )
+
+    def find_config(self) -> Path | None:
+        pyproject = Path("pyproject.toml")
+
+        if pyproject.exists():
+            with pyproject.open("rb") as f:
+                data = tomllib.load(f)
+            if "tool" in data and "jig" in data["tool"]:
+                return pyproject
+
+        jigfile = Path("jig.toml")
+        if jigfile.exists():
+            return jigfile
+
+        return None
 
     @command()
     def init(self):
@@ -544,16 +594,16 @@ gpu_count = 1
 
         # Check if pyproject.toml is newer than Dockerfile
         if GENERATE_DOCKERFILE:
-            pyproject_path = Path("pyproject.toml")
             dockerfile_path = Path(self.config.dockerfile)
 
             if (
-                pyproject_path.exists()
+                self.config_path
+                and self.config_path.exists()
                 and dockerfile_path.exists()
-                and pyproject_path.stat().st_mtime > dockerfile_path.stat().st_mtime
+                and self.config_path.stat().st_mtime > dockerfile_path.stat().st_mtime
             ):
                 print(
-                    "\N{INFORMATION SOURCE} pyproject.toml has changed, regenerating Dockerfile"
+                    f"\N{INFORMATION SOURCE} {self.config_path} has changed, regenerating Dockerfile"
                 )
                 self.dockerfile()
 
