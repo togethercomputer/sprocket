@@ -809,17 +809,36 @@ gpu_count = 1
         data = self.client.request("GET", f"/v1/deployments/{self.config.model_name}")
         pprint(data, indent_guides=False)
 
-    @command()
-    def logs(self):
+    @command(arg("follow", type=bool, default=False, help="Follow log output"))
+    def logs(self, follow: bool = False):
         """Get deployment logs"""
-        data = self.client.request(
-            "GET", f"/v1/deployments/{self.config.model_name}/logs"
-        )
-        if data and "lines" in data:
-            for line in data["lines"]:
-                print(line)
-        else:
-            print("No logs available")
+        if not follow:
+            data = self.client.request(
+                "GET", f"/v1/deployments/{self.config.model_name}/logs"
+            )
+            if data and "lines" in data:
+                for line in data["lines"]:
+                    print(line)
+            else:
+                print("No logs available")
+            return
+        url = f"https://{API_URL}/v1/deployments/{self.config.model_name}/logs?follow=true"
+        try:
+            response = requests.get(
+                url, headers=self.client.headers, stream=True, timeout=None
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    data = json.loads(line)
+                    if "lines" in data:
+                        for log_line in data["lines"]:
+                            print(log_line, flush=True)
+        except KeyboardInterrupt:
+            print("\nStopped following logs")
+        except Exception as e:
+            print(f"\nConnection ended: {e}")
 
     @command()
     def destroy(self):
