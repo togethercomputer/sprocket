@@ -174,8 +174,13 @@ class AsyncSprocket:
 class Runner:
     def __init__(self, sprocket: Sprocket | AsyncSprocket, model_name: str) -> None:
         self.queue_client = QueueClient(model_name)
-        # borrow httpx client
-        self.download_client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+        api_key = os.getenv("TOGETHER_API_KEY")
+        download_headers = {"Authorization": f"Bearer {api_key}"}
+        self.download_client = httpx.AsyncClient(
+            timeout=None, follow_redirects=True, headers=download_headers
+        )
+        # create download dir if it doesn't exist
+        pathlib.Path("inputs").mkdir(exist_ok=True)
         self.sprocket = sprocket
         # create InputOutputProcessor, potentially overriden by sprocket
         self.io_processor = sprocket.processor()
