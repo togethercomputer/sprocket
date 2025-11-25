@@ -4,6 +4,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["requests", "rich"]
 # ///
+# pyright: reportPrivateImportUsage=false, reportMissingImports=false
 
 import argparse
 import json
@@ -15,7 +16,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import tomllib
@@ -31,13 +32,13 @@ except ImportError:
         sys.exit(1)
 
 try:
-    from rich.pretty import pprint
+    from rich.pretty import pprint  # type: ignore
 except ImportError:
     try:
-        from pip._vendor.rich.pretty import pprint
+        from pip._vendor.rich.pretty import pprint  # type: ignore
     except ImportError:
 
-        def pprint(data, **kwargs):
+        def pprint(data: Any, **kwargs: Any) -> None:
             print(json.dumps(data, indent=2))
 
 # --- Configuration ---
@@ -50,8 +51,8 @@ elif TOGETHER_ENV == "qa":
     API_URL = "api.qa.together.ai"
     REGISTRY_URL = "registry.t6r-ai.dev"
 elif TOGETHER_ENV == "dev":
-    API_URL = os.getenv("TOGETHER_API_URL")
-    REGISTRY_URL = os.getenv("TOGETHER_REGISTRY_URL")
+    API_URL = os.getenv("TOGETHER_API_URL", "")
+    REGISTRY_URL = os.getenv("TOGETHER_REGISTRY_URL", "")
     assert API_URL and REGISTRY_URL, "API_URL and REGISTRY_URL must be set in dev mode"
 else:
     print("ERROR: unknown together env", TOGETHER_ENV)
@@ -65,7 +66,7 @@ DEBUG = os.getenv("TOGETHER_DEBUG", "").strip()[:1] in ("y", "1", "t")
 class ImageConfig:
     """Container image configuration from pyproject.toml"""
 
-    python_version: str = "3.11"
+    python_version: str = "3.11"  # need docstring gen here
     system_packages: list[str] = field(default_factory=list)
     environment: dict[str, str] = field(default_factory=dict)
     run: list[str] = field(default_factory=list)
@@ -102,41 +103,58 @@ class DeployConfig:
 
 @dataclass
 class Config:
-    """Main configuration from pyproject.toml"""
+    """Main configuration from jig.toml or pyproject.toml"""
 
     model_name: Optional[str] = None
     dockerfile: str = "Dockerfile"
     image: ImageConfig = field(default_factory=ImageConfig)
     deploy: DeployConfig = field(default_factory=DeployConfig)
+    _path: Path = Path("pyproject.toml")  # config path or cwd # tweak
 
     @classmethod
-    def load(cls, path: Path = Path("pyproject.toml")) -> "Config":
-        """Load configuration from pyproject.toml"""
-        if not path.exists():
+    def find(cls, config_path: Optional[str] = None, init: bool = False) -> "Config":
+        "Find specified config_path, pyproject.toml, or jig.toml"
+        if config_path:
+            if not (found_path := Path(config_path)).exists():
+                print(
+                    f"ERROR: Configuration file not found: {config_path}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            return cls.load(tomllib.load(found_path.open("rb")), found_path)
+
+        if (jigfile := Path("jig.toml")).exists():
+            return cls.load(tomllib.load(jigfile.open("rb")), jigfile)
+
+        if (pyproject_path := Path("pyproject.toml")).exists():
+            data = tomllib.load(pyproject_path.open("rb"))
+            if "tool" in data and "jig" in data["tool"]:
+                return cls.load(data, pyproject_path)
+
+        if init:
             return cls()
+        print(
+            "ERROR: No pyproject.toml or jig.toml found, use --config to specify a config path.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+    @classmethod
+    def load(cls, data: dict, path: Path) -> "Config":
+        """Load configuration. Useful for manually creating configs"""
+        is_pyproject = path.name == "pyproject.toml"
 
-        if path.name == "pyproject.toml":
-            jig_config = data.get("tool", {}).get("jig", {})
-        else:
-            jig_config = data
+        jig_config = data.get("tool", {}).get("jig", {}) if is_pyproject else data
 
         name = jig_config.get("name")
         if name is None:
-            pyproject_data = None
-            if path.name == "pyproject.toml":
-                pyproject_data = data
-            elif Path("pyproject.toml").exists():
-                with Path("pyproject.toml").open("rb") as f:
-                    pyproject_data = tomllib.load(f)
-            if pyproject_data:
-                name = pyproject_data.get("project", {}).get("name", "")
-
-        if not name:
-            name = path.resolve().parent.name
-            print(f"\N{PACKAGE} Name not set in config file or pyproject.toml - defaulting to {name}")
+            if is_pyproject:
+                name = data.get("project", {}).get("name", "")
+            else:
+                name = path.resolve().parent.name
+                print(
+                    f"\N{PACKAGE} Name not set in config file or pyproject.toml - defaulting to {name}"
+                )
 
         if autoscaling := jig_config.get("autoscaling", {}):
             # TODO: validate autoscaling once there are profiles other than QueueBacklogPerWorker
@@ -149,6 +167,7 @@ class Config:
             deploy=DeployConfig.from_dict(jig_config["deploy"]),
             dockerfile=jig_config.get("dockerfile", "Dockerfile"),
             model_name=name,
+            _path=path,
         )
 
 
@@ -167,45 +186,46 @@ class State:
     def load(cls, config_dir: Path) -> "State":
         path = config_dir / ".jig.json"
         try:
-            with open(path) as f:
-                return cls(_config_dir=config_dir, **json.load(f))
+            return cls(_config_dir=config_dir, **json.load(open(path)))
         except FileNotFoundError:
             return cls(_config_dir=config_dir)
 
-    def save(self):
+    def save(self) -> None:
         path = self._config_dir / ".jig.json"
         data = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+        json.dump(data, open(path, "w"), indent=2)
 
 
-# --- API Client ---
+# --- API Client and git/docker helper  ---
 
 
 class APIClient:
     """Together AI API client"""
 
-    def __init__(self, api_key: str):
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
+    def __init__(self, api_key: str) -> None:
+        self.session = requests.Session()
+        self.session.headers.update({"Authorization": f"Bearer {api_key}"})
 
-    def request(self, method: str, endpoint: str, **kwargs) -> Optional[dict]:
+    def request(self, method: str, endpoint: str, **kwargs: Any) -> Optional[dict]:
         """Make API request with error handling"""
         url = f"https://{API_URL}{endpoint}"
         if DEBUG:
             print(method, url)
-        response = requests.request(method, url, headers=self.headers, **kwargs)
+        response = self.session.request(method, url, **kwargs)
         response.raise_for_status()
         return response.json() if response.content else None
 
     def get_username(self) -> str:
         """Get username from proof-data endpoint"""
-        data = self.request("GET", "/api/user/proof-data")
-        assert data
+        response = self.request("GET", "/api/user/proof-data")
+        assert response
         # Currently returns project ID as lowercase
-        return data["projectId"].lower()
+        return response["projectId"].lower()
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
+    "run process with defaults"
+    return subprocess.run(cmd, capture_output=True, text=True, check=True)
 
 
 # --- Container Operations ---
@@ -213,106 +233,76 @@ class APIClient:
 
 def generate_dockerfile(config: Config) -> str:
     """Generate Dockerfile from config"""
-    lines = []
-
-    # Multi-stage build
-    lines.append(f"FROM python:{config.image.python_version} AS builder")
-    lines.append("")
-
-    # System packages in builder
-    sys_pkgs = " ".join(config.image.system_packages or [])
-    if sys_pkgs:
-        lines.append("RUN --mount=type=cache,target=/var/cache/apt \\")
-        lines.append("  apt-get update && \\")
-        lines.append("  DEBIAN_FRONTEND=noninteractive \\")
-        lines.append(f"  apt-get install -y --no-install-recommends {sys_pkgs} && \\")
-        lines.append("  apt-get clean && rm -rf /var/lib/apt/lists/*")
-        lines.append("")
-
-    # UV for package installation
-    lines.append("COPY --from=ghcr.io/astral-sh/uv /uv /usr/local/bin/uv\n")
-
-    # Install Python packages
-    lines.append("WORKDIR /app")
-    lines.append("COPY pyproject.toml .")
-    lines.append("RUN --mount=type=cache,target=/root/.cache/uv \\")
-    lines.append("  uv pip install --system --compile-bytecode .\n")
-
-    # Final stage - slim image
-    lines.append(f"FROM python:{config.image.python_version}-slim\n")
-
-    # System packages in final image
-    if sys_pkgs:
-        lines.append("RUN --mount=type=cache,target=/var/cache/apt \\")
-        lines.append("  apt-get update && \\")
-        lines.append("  DEBIAN_FRONTEND=noninteractive \\")
-        lines.append(f"  apt-get install -y --no-install-recommends {sys_pkgs} && \\")
-        lines.append("  apt-get clean && rm -rf /var/lib/apt/lists/*\n")
-
-    # Copy Python installation
-    lines.append(
-        f"COPY --from=builder /usr/local/lib/python{config.image.python_version} /usr/local/lib/python{config.image.python_version}"
-    )
-    lines.append("COPY --from=builder /usr/local/bin /usr/local/bin\n")
-
-    # Tini for proper signal handling
-    lines.append("COPY --from=krallin/ubuntu-tini:latest /usr/local/bin/tini /tini")
-    lines.append('ENTRYPOINT ["/tini", "--"]\n')
-
-    # Environment variables
-    for key, value in config.image.environment.items():
-        lines.append(f"ENV {key}={value}")
-    if config.image.environment:
-        lines.append("")
+    # Packages installed in both builder and runner
+    apt = ""
+    if config.image.system_packages:
+        sys_pkgs = " ".join(config.image.system_packages or [])
+        apt = f"""RUN --mount=type=cache,target=/var/cache/apt \\")
+  apt-get update && \
+  DEBIAN_FRONTEND=noninteractive \
+  apt-get install -y --no-install-recommends {sys_pkgs} && \
+  apt-get clean && rm -rf /var/lib/apt/lists/*
+"""
+    # Environment section
+    env = "\n".join(f"ENV {k}={v}" for k, v in config.image.environment.items())
+    if env:
+        env += "\n"
 
     # Run commands
-    for cmd in config.image.run:
-        lines.append(f"RUN {cmd}")
-    if config.image.run:
-        lines.append("")
+    run = "\n".join(f"RUN {cmd}" for cmd in config.image.run)
+    if run:
+        run += "\n"
 
-    # Copy files (preserving directory structure)
-    lines.append("WORKDIR /app")
-    files_to_copy = get_files_to_copy(config)
-    for file in files_to_copy:
-        lines.append(f"COPY {file} {file}")
-    lines.append(
-        "RUN --mount=type=bind,source=.,target=/src cp /src/.worker.p* worker.py 2>/dev/null || true"
-    )
-    # this tag will set the X-Worker-Version header, used for rollout monitoring
-    lines.append(
-        "RUN --mount=type=bind,source=.,target=/src git -C /src describe --tags --exact-match > VERSION"
-    )
-    lines.append("")
+    # Files
+    copy = "\n".join(f"COPY {file} {file}" for file in get_files_to_copy(config))
 
-    # CMD
-    lines.append(f"CMD {json.dumps(shlex.split(config.image.cmd))}")
+    return f"""
+# Build stage
+FROM python:{config.image.python_version} AS builder
 
-    return "\n".join(lines)
+{apt}
+# Grab UV to install python packages
+COPY --from=ghcr.io/astral-sh/uv /uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY pyproject.toml .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --compile-bytecode .
+
+# Final stage - slim image
+FROM python:{config.image.python_version}-slim
+
+{apt}
+COPY --from=builder /usr/local/lib/python{config.image.python_version} /usr/local/lib/python{config.image.python_version}
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Tini for proper signal handling
+COPY --from=krallin/ubuntu-tini:latest /usr/local/bin/tini /tini
+ENTRYPOINT ["/tini", "--"]
+
+{env}
+{run}
+WORKDIR /app
+{copy}
+# this is temporarily needed if building from a monorepo
+RUN --mount=type=bind,source=.,target=/src cp /src/.worker.p* worker.py 2>/dev/null || true
+# this tag will set the X-Worker-Version header, used for rollout monitoring
+RUN --mount=type=bind,source=.,target=/src git -C /src describe --tags --exact-match > VERSION
+
+CMD {json.dumps(shlex.split(config.image.cmd))}"""
 
 
 def get_files_to_copy(config: Config) -> list[str]:
     """Get list of files to copy"""
     files = set(config.image.copy)
-
     if config.image.auto_include_git:
         try:
-            result = subprocess.run(
-                ["git", "ls-files"], capture_output=True, text=True, check=True
-            )
             # Check if repo is clean
-            status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            if status.stdout.strip():
+            if run(["git", "status", "--porcelain"]).stdout.strip():
                 raise RuntimeError(
                     "Git repository has uncommitted changes: auto_include_git not allowed."
                 )
-
-            git_files = result.stdout.strip().split("\n")
+            git_files = run(["git", "ls-files"]).stdout.strip().split("\n")
             files.update(f for f in git_files if f and f != ".")
         except subprocess.CalledProcessError:
             pass  # Not a git repo or git not available
@@ -327,37 +317,26 @@ def get_files_to_copy(config: Config) -> list[str]:
 # --- CLI Framework ---
 
 
-class Arg:
+class arg:
     """Argument definition for CLI commands"""
 
     def __init__(
-        self,
-        name: str,
-        type: type = str,
-        default: Any = None,
-        help: str = "",
-        flag: bool = False,
-    ):
+        self, name: str, type: type = str, default: Any = None, help: str = ""
+    ) -> None:
         self.name = name
         self.type = type
         self.default = default
         self.help = help
-        self.flag = flag
+        # Determine if this is a flag based on type and default
+        self.flag = type is bool and default is False
 
 
-def arg(name: str, type: type = str, default: Any = None, help: str = ""):
-    """Create an argument definition"""
-    # Determine if this is a flag based on type and default
-    flag = type is bool and default is False
-    return Arg(name, type, default, help, flag)
-
-
-def command(*args):
+def command(*args: arg) -> Callable:
     """Decorator for CLI commands"""
 
-    def decorator(func):
+    def decorator(func: Callable) -> Callable:
         # Store argument definitions
-        func._cli_args = list(args)
+        func._cli_args = list(args)  # type: ignore
         return func
 
     return decorator
@@ -373,9 +352,7 @@ class CLI:
         )
         # Add global --config argument
         self.parser.add_argument(
-            "--config",
-            type=str,
-            help="Configuration file path (overrides default)"
+            "--config", type=str, help="Configuration file path (overrides default)"
         )
         self.subparsers = self.parser.add_subparsers(
             dest="command", help="Available commands"
@@ -389,7 +366,7 @@ class CLI:
             if hasattr(method, "_cli_args"):
                 self._add_command(name, method)
 
-    def _add_command(self, name: str, method):
+    def _add_command(self, name: str, method: Callable) -> None:
         """Add a command from a decorated method"""
         # Use function name as command name
         help_text = method.__doc__.strip() if method.__doc__ else ""
@@ -415,7 +392,7 @@ class CLI:
                     help=arg_def.help,
                 )
 
-    def run(self):
+    def run(self) -> None:
         """Parse arguments and run command"""
         args, _ = self.parser.parse_known_args()
 
@@ -424,16 +401,16 @@ class CLI:
             return
 
         # Create app instance
-        app = self.app_class(config_path=args.config)
+        app = self.app_class(config_path=args.config, init=args.command == "init")
 
         # Find and call method
-        method = getattr(app, args.command, None)
-        if not method:
+        if not (method := getattr(app, args.command, None)):
             print(f"Unknown command: {args.command}", file=sys.stderr)
             sys.exit(1)
 
         # Build kwargs from parsed args
         kwargs = {}
+        assert hasattr(method, "_cli_args")
         for arg_def in method._cli_args:
             value = getattr(args, arg_def.name, arg_def.default)
             if value is ...:
@@ -450,22 +427,9 @@ class CLI:
 class Jig:
     """jig - Simple deployment tool for Together AI"""
 
-    def __init__(self, config_path: Optional[str] = None):
-        if config_path:
-            config_file = Path(config_path)
-            if not config_file.exists():
-                print(f"ERROR: Configuration file not found: {config_path}", file=sys.stderr)
-                sys.exit(1)
-            self.config_path = config_file
-            self.config = Config.load(config_file)
-        else:
-            self.config_path = self.find_config()
-            if not self.config_path:
-                print("ERROR: No pyproject.toml or jig.toml found, use --config to specify a config path.", file=sys.stderr)
-                sys.exit(1)
-            self.config = Config.load(self.config_path)
-
-        self.state = State.load(self.config_path.parent)
+    def __init__(self, config_path: Optional[str] = None, init: bool = False) -> None:
+        self.config = Config.find(config_path, init=init)
+        self.state = State.load(self.config._path)
 
         # Get API key
         self.api_key = os.getenv("TOGETHER_API_KEY", "")
@@ -481,10 +445,6 @@ class Jig:
             self.state.username = self.client.get_username()
             self.state.save()
 
-        # Set model name
-        if not self.config.model_name:
-            self.config.model_name = self.config_path.resolve().parent.name
-
     def get_image(self, tag: str = "latest") -> str:
         """Get full image name"""
         return f"{REGISTRY_URL}/{self.state.username}/{self.config.model_name}:{tag}"
@@ -494,64 +454,29 @@ class Jig:
         image_name = self.get_image(tag)
         if tag != "latest":
             return image_name
-
         try:
             # Use docker inspect to get the registry digest from RepoDigests
-            result = subprocess.run(
-                ["docker", "inspect", "--format={{index .RepoDigests 0}}", image_name],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            image_url = result.stdout.strip()
-            if not image_url or image_url == "<no value>":
-                raise RuntimeError(
-                    f"No registry digest found for {image_name}. "
-                    "Make sure the image was pushed to registry first."
-                )
-
-            return image_url
+            cmd = ["docker", "inspect", "--format={{index .RepoDigests 0}}", image_name]
+            if (image_url := run(cmd).stdout.strip()) and image_url != "<no value>":
+                return image_url
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Failed to get digest for {image_name}: {e.stderr.strip() if e.stderr else 'Docker command failed'}"
-            )
-
-    def find_config(self) -> Path | None:
-        pyproject = Path("pyproject.toml")
-
-        if pyproject.exists():
-            with pyproject.open("rb") as f:
-                data = tomllib.load(f)
-            if "tool" in data and "jig" in data["tool"]:
-                return pyproject
-
-        jigfile = Path("jig.toml")
-        if jigfile.exists():
-            return jigfile
-
-        return None
+            msg = e.stderr.strip() if e.stderr else "Docker command failed"
+            raise RuntimeError(f"Failed to get digest for {image_name}: {msg}")
+        raise RuntimeError(
+            f"No registry digest found for {image_name}. Make sure the image was pushed to registry first."
+        )
 
     @command()
-    def init(self):
+    def init(self) -> None:
         """Initialize jig configuration"""
-        pyproject = Path("pyproject.toml")
-
-        if pyproject.exists():
+        if (pyproject := Path("pyproject.toml")).exists():
             print("pyproject.toml already exists")
             return
-
         # Create minimal pyproject.toml
         content = """[project]
 name = "my-model"
 version = "0.1.0"
-dependencies = [
-    "torch",
-    "transformers",
-]
-
-[tool.jig]
-model_name = "my-model"
+dependencies = ["torch", "transformers"]
 
 [tool.jig.image]
 python_version = "3.11"
@@ -563,48 +488,35 @@ description = "My model deployment"
 gpu_type = "h100-80gb"
 gpu_count = 1
 """
-
-        with open(pyproject, "w") as f:
-            f.write(content)
-
+        open(pyproject, "w").write(content)
         print("\N{CHECK MARK} Created pyproject.toml")
         print("  Edit the configuration and run 'jig deploy'")
 
     @command()
-    def dockerfile(self):
+    def dockerfile(self) -> None:
         """Generate Dockerfile"""
         if not GENERATE_DOCKERFILE:
-            print(
-                "Dockerfile generation disabled (set GENERATE_DOCKERFILE=1 to enable)"
-            )
-            return
-
-        content = generate_dockerfile(self.config)
-
-        # Write file
-        with open(self.config.dockerfile, "w") as f:
-            f.write(content)
-
-        print("\N{CHECK MARK} Generated Dockerfile")
+            print("Set GENERATE_DOCKERFILE=1 to enable dockerfile generation")
+        else:
+            open(self.config.dockerfile, "w").write(generate_dockerfile(self.config))
+            print("\N{CHECK MARK} Generated Dockerfile")
 
     @command(arg("tag", default="latest", help="Image tag"))
-    def build(self, tag: str = "latest"):
+    def build(self, tag: str = "latest") -> None:
         """Build container image"""
         image = self.get_image(tag)
 
         # Check if pyproject.toml is newer than Dockerfile
         if GENERATE_DOCKERFILE:
             dockerfile_path = Path(self.config.dockerfile)
-
             if (
-                self.config_path
-                and self.config_path.exists()
+                self.config._path
+                and self.config._path.exists()
                 and dockerfile_path.exists()
-                and self.config_path.stat().st_mtime > dockerfile_path.stat().st_mtime
+                and self.config._path.stat().st_mtime > dockerfile_path.stat().st_mtime
             ):
-                print(
-                    f"\N{INFORMATION SOURCE} {self.config_path} has changed, regenerating Dockerfile"
-                )
+                msg = f"\N{INFORMATION SOURCE} {self.config._path} has changed, regenerating Dockerfile"
+                print(msg)
                 self.dockerfile()
 
             # Generate Dockerfile if needed
@@ -612,11 +524,9 @@ gpu_count = 1
                 self.dockerfile()
 
         build_dir_worker_path = Path("./.sprocket.py")
+        dst = Path(__file__).parent / "sprocket" / "sprocket.py"
         try:
-            shutil.copy(
-                Path(__file__).parent / "sprocket" / "sprocket.py",
-                build_dir_worker_path,
-            )
+            shutil.copy(dst, build_dir_worker_path)
         except FileNotFoundError:
             pass
 
@@ -628,11 +538,10 @@ gpu_count = 1
             raise RuntimeError("Build failed")
 
         build_dir_worker_path.unlink(missing_ok=True)
-
         print("\N{CHECK MARK} Built")
 
     @command(arg("tag", default="latest", help="Image tag"))
-    def push(self, tag: str = "latest"):
+    def push(self, tag: str = "latest") -> None:
         """Push image to registry"""
         image = self.get_image(tag)
 
@@ -644,11 +553,10 @@ gpu_count = 1
         print(f"Pushing {image}")
         if subprocess.run(["docker", "push", image]).returncode != 0:
             raise RuntimeError("Push failed")
-
         print("\N{CHECK MARK} Pushed")
 
     @command()
-    def secrets(self):
+    def secrets(self) -> None:
         """Manage deployment secrets"""
         # maybe this would be cleaner with a sub-CLI
         parser = argparse.ArgumentParser(prog="jig secrets")
@@ -682,7 +590,7 @@ gpu_count = 1
         elif args.action == "list":
             self._list_secrets()
 
-    def _set_secret(self, name: str, value: str, description: str):
+    def _set_secret(self, name: str, value: str, description: str) -> None:
         """Set secret for the deployment"""
         deployment_secret_name = f"{self.config.model_name}-{name}"
         secret_data = {
@@ -698,16 +606,16 @@ gpu_count = 1
             )
             print(f"\N{CHECK MARK} Updated secret: '{name}'")
         except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                print("\N{ROCKET} Creating new secret")
-                self.client.request("POST", "/v1/secrets", json=secret_data)
-                print(f"\N{CHECK MARK} Created secret: {name}")
-            else:
+            if e.response.status_code != 404:
                 raise
+            print("\N{ROCKET} Creating new secret")
+            self.client.request("POST", "/v1/secrets", json=secret_data)
+            print(f"\N{CHECK MARK} Created secret: {name}")
+
         self.state.secrets[name] = deployment_secret_name
         self.state.save()
 
-    def _unset_secret(self, name: str):
+    def _unset_secret(self, name: str) -> None:
         """Unset the secret for the deployment"""
         # FIXME: also delete secret from remote
         if self.state.secrets.pop(name, ""):
@@ -716,12 +624,11 @@ gpu_count = 1
         else:
             print(f"Secret {name} is not set")
 
-    def _list_secrets(self):
+    def _list_secrets(self) -> None:
         """List all secrets for deployment"""
-        print(
-            f"\N{INFORMATION SOURCE} Following secrets are mapped to deployment {self.config.model_name}"
-        )
-        for secret_name in self.state.secrets.keys():
+        msg = f"\N{INFORMATION SOURCE} Following secrets are mapped to deployment {self.config.model_name}"
+        print(msg)
+        for secret_name in self.state.secrets:
             print(f"  - Secret '{secret_name}'")
 
     @command(
@@ -731,7 +638,7 @@ gpu_count = 1
     )
     def deploy(
         self, tag: str = "latest", build_only: bool = False, image: Optional[str] = None
-    ):
+    ) -> Optional[dict]:
         """Deploy model"""
         if image:
             # Use provided image, skip build/push
@@ -745,10 +652,9 @@ gpu_count = 1
             deployment_image = self.get_image_with_digest(tag)
 
         if build_only:
-            print("\N{CHECK MARK} Build complete (--build-only)")
-            return
+            return print("\N{CHECK MARK} Build complete (--build-only)")
 
-        deploy_data = {
+        deploy_data: "dict[str, Any]" = {
             "name": self.config.model_name,
             "description": self.config.deploy.description,
             "image": deployment_image,
@@ -787,61 +693,57 @@ gpu_count = 1
 
         # Try to update first, fallback to create if not found
         try:
-            self.client.request(
+            response = self.client.request(
                 "PATCH",
                 f"/v1/deployments/{self.config.model_name}",
                 json=deploy_data,
             )
             print("\N{CHECK MARK} Updated deployment")
         except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                # Create new deployment
-                print("\N{ROCKET} Creating new deployment")
-                data = self.client.request("POST", "/v1/deployments", json=deploy_data)
-                print(f"\N{CHECK MARK} Deployed: {self.config.model_name}")
-                return data
-            else:
+            if e.response.status_code != 404:
                 raise
+            # Create new deployment
+            print("\N{ROCKET} Creating new deployment")
+            response = self.client.request("POST", "/v1/deployments", json=deploy_data)
+            print(f"\N{CHECK MARK} Deployed: {self.config.model_name}")
+        return response
 
     @command()
-    def status(self):
+    def status(self) -> None:
         """Get deployment status"""
-        data = self.client.request("GET", f"/v1/deployments/{self.config.model_name}")
-        pprint(data, indent_guides=False)
+        response = self.client.request(
+            "GET", f"/v1/deployments/{self.config.model_name}"
+        )
+        pprint(response, indent_guides=False)
 
     @command(arg("follow", type=bool, default=False, help="Follow log output"))
-    def logs(self, follow: bool = False):
+    def logs(self, follow: bool = False) -> None:
         """Get deployment logs"""
         if not follow:
-            data = self.client.request(
+            response = self.client.request(
                 "GET", f"/v1/deployments/{self.config.model_name}/logs"
             )
-            if data and "lines" in data:
-                for line in data["lines"]:
-                    print(line)
+            if response and "lines" in response:
+                for log_line in response["lines"]:
+                    print(log_line, flush=True)
             else:
                 print("No logs available")
             return
         url = f"https://{API_URL}/v1/deployments/{self.config.model_name}/logs?follow=true"
         try:
-            response = requests.get(
-                url, headers=self.client.headers, stream=True, timeout=None
-            )
+            response = self.client.session.get(url, stream=True, timeout=None)
             response.raise_for_status()
-
             for line in response.iter_lines():
                 if line:
-                    data = json.loads(line)
-                    if "lines" in data:
-                        for log_line in data["lines"]:
-                            print(log_line, flush=True)
+                    for log_line in json.loads(line).get("lines", []):
+                        print(log_line, flush=True)
         except KeyboardInterrupt:
             print("\nStopped following logs")
         except Exception as e:
             print(f"\nConnection ended: {e}")
 
     @command()
-    def destroy(self):
+    def destroy(self) -> None:
         """Destroy deployment"""
         self.client.request("DELETE", f"/v1/deployments/{self.config.model_name}")
         print(f"\N{WASTEBASKET} Destroyed {self.config.model_name}")
@@ -858,44 +760,37 @@ gpu_count = 1
         prompt: Optional[str] = None,
         payload: Optional[str] = None,
         watch: bool = False,
-    ):
+    ) -> None:
         """Submit a job to the deployment"""
         if not prompt and not payload:
             print("ERROR: Either --prompt or --payload required", file=sys.stderr)
             sys.exit(1)
 
-        job_payload = json.loads(payload) if payload else {"prompt": prompt}
-
-        data = self.client.request(
-            "POST",
-            "/v1/videos/generations",
-            json={
-                "model": f"{self.config.model_name}",
-                "payload": job_payload,
-                "priority": 1,
-            },
-        )
-
+        request = {
+            "model": f"{self.config.model_name}",
+            "payload": json.loads(payload) if payload else {"prompt": prompt},
+            "priority": 1,
+        }
+        response = self.client.request("POST", "/v1/videos/generations", json=request)
         print("\N{CHECK MARK} Submitted job")
-        pprint(data, indent_guides=False)
+        pprint(response, indent_guides=False)
 
-        if watch and data and "requestId" in data:
-            print(f"\nWatching job {data['requestId']}...")
-            self._watch_job_status(data["requestId"])
+        if watch and response and "requestId" in response:
+            print(f"\nWatching job {response['requestId']}...")
+            self._watch_job_status(response["requestId"])
 
-    def _watch_job_status(self, request_id: str):
+    def _watch_job_status(self, request_id: str) -> None:
         """Watch job status until completion"""
         last_status = None
         while True:
             try:
-                data = self.client.request(
+                response = self.client.request(
                     "GET",
                     f"/v1/videos/status?request_id={request_id}&model={self.config.model_name}",
                 )
-
-                current_status = data.get("status", "")
+                current_status = (response or {}).get("status", "")
                 if current_status != last_status:
-                    pprint(data, indent_guides=False)
+                    pprint(response, indent_guides=False)
                     last_status = current_status
 
                 if current_status in ["done", "failed", "finished", "error"]:
@@ -908,24 +803,24 @@ gpu_count = 1
                 break
 
     @command(arg("request_id", help="Job request ID"))
-    def job_status(self, request_id: str):
+    def job_status(self, request_id: str) -> None:
         """Get status of a specific video job"""
-        data = self.client.request(
+        response = self.client.request(
             "GET",
             f"/v1/videos/status?request_id={request_id}&model={self.config.model_name}",
         )
-        pprint(data, indent_guides=False)
+        pprint(response, indent_guides=False)
 
     @command()
-    def queue_status(self):
+    def queue_status(self) -> None:
         """Get queue status for the deployment"""
-        data = self.client.request(
+        response = self.client.request(
             "GET", f"/internal/v1/queue/status?model={self.config.model_name}"
         )
-        pprint(data, indent_guides=False)
+        pprint(response, indent_guides=False)
 
 
-def main():
+def main() -> None:
     """Main entry point"""
     try:
         cli = CLI(Jig)
