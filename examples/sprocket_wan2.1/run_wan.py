@@ -36,9 +36,9 @@ class WanSprocket(sprocket.Sprocket):
         if dist.get_rank() == 0:
             print("Saving video to output.mp4")
             export_to_video(video, "output.mp4", fps=15)
-            return {"url": sprocket.FileOutput("output.mp4")}
+            return {"output": sprocket.FileOutput("output.mp4")}
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "wan-ai/wan2.1")
+    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "sprocket-wan2-1")
     sprocket.run(WanSprocket(), queue_name, use_torchrun=True)

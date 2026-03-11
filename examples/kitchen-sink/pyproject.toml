@@ -30,5 +30,5 @@ name = "kitchen-sink-pantry"
 mount_path = "/pantry"
 
 [tool.jig.autoscaling]
-profile = "QueueBacklogPerWorker"
-targetValue = "1"
+metric = "QueueBacklogPerWorker"
+target = 1.01
