@@ -1,9 +1,13 @@
 [project]
-name = "qwen25-vl-byoc"
+name = "qwen25-vl"
 version = "1.0.0" 
 
 [tool.jig.deploy]
+# deploy an existing image instead of building
+image = "vllm/vllm-openai:v0.17.1"
+
 description = "Test Qwen2.5 video input"
+
 gpu_type = "h100-80gb"
 gpu_count = 2
 cpu = 4

@@ -1,8 +1,11 @@
 [project]
-name = "deepseek-ocr2-mo"
+name = "deepseek-ocr2"
 version = "1.0.0"
 
 [tool.jig.deploy]
+# deploy an existing image instead of building
+image = "vllm/vllm-openai:v0.17.1"
+
 description = "Test DeepSeek OCR2 input"
 gpu_type = "h100-80gb"
 gpu_count = 1

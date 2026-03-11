@@ -9,16 +9,13 @@ authors = [
   {name="Sylvie Liberman", email="sylvie@together.ai"},
   {name="Yorick van Pelt", email="yvanpelt@together.ai"},
 ]
-description = "Together BYOC SDK"
+description = "Together Dedicated Container Inference SDK"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 # todo: constrain
 dependencies = [
-    "aiofiles",
     "httpx",
     "orjson>=3.11.2",
-    "requests",
-    "rich",
     "starlette",
     "uvicorn",
 ]

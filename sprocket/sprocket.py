@@ -1,12 +1,12 @@
 import argparse
 import asyncio
+import contextlib
 import dataclasses
 import enum
 import importlib.metadata
 import logging
 import multiprocessing.connection
 import os
-import pathlib
 import pickle
 import random
 import signal
@@ -17,6 +17,8 @@ import sys
 import time
 import traceback
 import uuid
+from asyncio import StreamReader, StreamWriter
+from pathlib import Path, PosixPath
 from typing import Any, AsyncIterator, Optional, Type
 from urllib.parse import urlparse
 
@@ -25,14 +27,16 @@ import orjson
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
+from starlette.routing import Route
 from starlette.responses import JSONResponse, PlainTextResponse
 
-logging.basicConfig(
-    level=logging.INFO, format="{levelname} {module}:{lineno}: {message}", style="{"
-)
+fmt = "{levelname} {module}:{lineno}: {message}"
+logging.basicConfig(level=logging.INFO, format=fmt, style="{")
 logger = logging.getLogger()
 
 API_BASE = os.getenv("TOGETHER_API_BASE_URL", "https://api.together.ai")
+if not API_BASE.startswith("https://"):
+    API_BASE = f"https://{API_BASE}"
 RETRIEVE_URL = f"{API_BASE}/internal/v1/queue/retrieve"
 UPDATE_URL = f"{API_BASE}/internal/v1/videos/status"
 UPLOAD_URL = f"{API_BASE}/v1/storage/upload-request"
@@ -42,8 +46,8 @@ MAX_ASYNC_PREDICT_TIME = int(os.getenv("TERMINATION_GRACE_PERIOD_SECONDS", "300"
 
 HOSTNAME = socket.gethostname()
 try:
-    SPROCKET_VERSION = f" {__package__}/{importlib.metadata.version(__package__)}"
-except importlib.metadata.PackageNotFoundError:
+    SPROCKET_VERSION = f" {__package__}/{importlib.metadata.version(__package__ or '')}"
+except (ValueError, importlib.metadata.PackageNotFoundError):
     SPROCKET_VERSION = ""
 
 try:
@@ -51,20 +55,20 @@ try:
 except FileNotFoundError:
     VERSION = ""
 
-SHUTDOWN_REQUESTED = pathlib.Path(".shutdown_requested")
-SHUTDOWN_NOW = pathlib.Path(".shutdown_now")
-FATAL_ERROR = pathlib.Path(".fatal_error")
+SHUTDOWN_REQUESTED = Path(".shutdown_requested")
+SHUTDOWN_NOW = Path(".shutdown_now")
+FATAL_ERROR = Path(".fatal_error")
 
 
-class MetricsEndpointFilter(logging.Filter):
+class NoMetrics(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return record.getMessage().find("/metrics") == -1
 
 
-logging.getLogger("uvicorn.access").addFilter(MetricsEndpointFilter())
+logging.getLogger("uvicorn.access").addFilter(NoMetrics())
 
 
-class FileOutput(pathlib.PosixPath):
+class FileOutput(PosixPath):
     "Output file to be uploaded"
 
 
@@ -133,27 +137,23 @@ class QueueClient:
 
     async def upload_file(self, request_id: str, path: FileOutput) -> str:
         try:
-            resp = await self.client.post(
-                UPLOAD_URL, json={"filename": request_id + "-" + path.name}
-            )
-            await self.client.put(
-                resp.json()["upload_url"]["url"], content=path.open("rb").read()
-            )
-        except:
+            req = {"filename": request_id + "-" + path.name}
+            resp = await self.client.post(UPLOAD_URL, json=req)
+            url = resp.json()["upload_url"]["url"]
+            await self.client.put(url, content=path.open("rb").read())
+        except Exception:
             traceback.print_exc()
             raise
         return f"{API_BASE}/v1/storage/{request_id}-{path.name}"
 
 
 class OrjsonResponse(JSONResponse):
-    def render(self, content: "Any") -> bytes:
+    def render(self, content: Any) -> bytes:
         return orjson.dumps(content)
 
 
 class InputOutputProcessor:
-    def process_input_file(
-        self, response: httpx.Response, dest_path: pathlib.Path
-    ) -> None:
+    def process_input_file(self, response: httpx.Response, dest_path: Path) -> None:
         """
         overwrite this to add processing after files are downloaded
         """
@@ -183,7 +183,7 @@ class Sprocket:
 
 class AsyncSprocket:
     processor: Type[InputOutputProcessor] = InputOutputProcessor
-    warmup_inputs: list[dict] = []  # inputs to run during warmup/cache generation
+    warmup_inputs: list[dict] = []
 
     async def setup(self) -> None:
         raise NotImplementedError
@@ -196,7 +196,7 @@ class AsyncSprocket:
 
 
 class Runner:
-    def __init__(self, sprocket: Sprocket | AsyncSprocket, model_name: str) -> None:
+    def __init__(self, sprocket: "Sprocket | AsyncSprocket", model_name: str) -> None:
         self.queue_client = QueueClient(model_name)
         self.download_client = httpx.AsyncClient(timeout=None, follow_redirects=True)
         self.sprocket = sprocket
@@ -206,9 +206,8 @@ class Runner:
         self.queue_mode = False
         self.healthy = False
 
-    async def download_file(self, url: str) -> pathlib.Path:
-        # replace with more sophisticated download later
-        dst = pathlib.Path("inputs/" + os.path.basename(urlparse(url).path))
+    async def download_file(self, url: str) -> Path:
+        dst = Path("inputs/" + os.path.basename(urlparse(url).path))
         resp = await self.download_client.get(url)
         resp.raise_for_status()
         self.io_processor.process_input_file(resp, dst)
@@ -221,7 +220,7 @@ class Runner:
             predict_future = self.sprocket.predict(inputs)
             return await asyncio.wait_for(predict_future, MAX_ASYNC_PREDICT_TIME)
         except TimeoutError:
-            # if this happens, we want to stop, but the subprocess is still busy and we don't have a way to reset it
+            # time's up, but the subprocess is still busy and we can't reset it
             # so we need to bail and restart cleanly
             FATAL_ERROR.touch()
             raise TimeoutError(f"Prediction took longer than {MAX_ASYNC_PREDICT_TIME}s")
@@ -261,7 +260,7 @@ class Runner:
                 if self.healthy:
                     await self.queue_client.update_job_status(request_id, "running")
         except asyncio.CancelledError:
-            # Task was cancelled, which is expected when job completes
+            # task was cancelled, which is expected when job completes
             pass
 
     async def run_one_job(self) -> None:
@@ -323,7 +322,7 @@ class Runner:
 
         logging.info("shutdown_now is finally set")
 
-        # Cleanup sprocket (terminates torchrun subprocesses if any)
+        # cleanup sprocket (terminates torchrun subprocesses if any)
         result = self.sprocket.shutdown()
         if result is not None:
             await result
@@ -333,16 +332,11 @@ class Runner:
     async def maybe_run_warmup(self) -> None:
         # RUN_AND_EXIT: run warmup inputs the specified number of times then exit
         # useful for building caches or profiling with nsys
-        run_and_exit = int(os.getenv("RUN_AND_EXIT", "0"))
-
-        # if RUN_AND_EXIT is set, we can default the warmup args to {}
-        # If RUN_AND_EXIT is not set, just run the warmup inputs once
-        # but we should skip if there are no warmup inputs
-        if run_and_exit:
-            warmup_inputs = (
-                self.sprocket.warmup_inputs or [{}]
-            ) * run_and_exit  # repeat inputs
+        if run_and_exit := int(os.getenv("RUN_AND_EXIT", "0")):
+            # warmup inputs default to {}
+            warmup_inputs = (self.sprocket.warmup_inputs or [{}]) * run_and_exit
         else:
+            # only if warmup inputs are set, run them once
             warmup_inputs = self.sprocket.warmup_inputs or []
 
         cold_start_time = time.time() - PROCESS_START_TIME
@@ -361,66 +355,55 @@ class Runner:
             SHUTDOWN_REQUESTED.touch()
             sys.exit(0)
 
-    def create_app(self) -> Starlette:
-        app = Starlette()
-
-        @app.on_event("startup")
-        async def startup() -> None:
-            if isinstance(self.sprocket, AsyncSprocket):
-                await self.sprocket.setup()
-            else:
-                self.sprocket.setup()
-            await self.maybe_run_warmup()
-            if self.queue_mode:
-                asyncio.create_task(self.run_queue_worker())
-            self.healthy = True
-
-        @app.on_event("shutdown")
-        async def handle_shutdown() -> None:
+    @contextlib.asynccontextmanager
+    async def lifespan(self, _: Starlette) -> AsyncIterator[None]:
+        if isinstance(self.sprocket, AsyncSprocket):
+            await self.sprocket.setup()
+        else:
+            self.sprocket.setup()
+        await self.maybe_run_warmup()
+        if self.queue_mode:
+            asyncio.create_task(self.run_queue_worker())
+        self.healthy = True
+        try:
+            yield
+        finally:
             await self.handle_shutdown()
 
-        @app.route("/health")
-        async def health(request: Request) -> JSONResponse:
-            if (
-                isinstance(self.sprocket, TorchRunSprocket)
-                and self.sprocket.torchrun_proc
-            ):
-                if (retcode := self.sprocket.torchrun_proc.returncode) is not None:
-                    # this should be very unlikely - ConnectionManager should catch errors and exit before this happens
-                    logger.error(f"Torchrun process exited with retcode {retcode}!!")
-                    self.healthy = False
-                    FATAL_ERROR.touch()
-            if self.healthy:
-                return JSONResponse({"status": "healthy"})
-            return JSONResponse({"status": "unhealthy"}, status_code=503)
+    async def health_route(self, _: Request) -> JSONResponse:
+        if isinstance(self.sprocket, TorchRunSprocket) and self.sprocket.torchrun_proc:
+            if (retcode := self.sprocket.torchrun_proc.returncode) is not None:
+                # this should be very unlikely - ConnectionManager should catch errors and exit before this happens
+                logger.error(f"Torchrun process exited with retcode {retcode}!!")
+                self.healthy = False
+                FATAL_ERROR.touch()
+        if self.healthy:
+            return JSONResponse({"status": "healthy"})
+        return JSONResponse({"status": "unhealthy"}, status_code=503)
 
-        @app.route("/metrics")
-        async def metrics(request: Request) -> PlainTextResponse:
-            busy_value = 1.0 if self.busy else 0.0
-            return PlainTextResponse(f"requests_inflight {busy_value}")
+    async def metrics_route(self, _: Request) -> PlainTextResponse:
+        busy_value = 1.0 if self.busy else 0.0
+        return PlainTextResponse(f"requests_inflight {busy_value}")
 
-        @app.route("/generate", methods=["POST"])
-        async def generate(request: Request) -> JSONResponse:
-            # TODO: Future support for async/batching/concurrency
-            if self.busy:
-                return JSONResponse({"error": "Worker is busy"}, status_code=503)
+    async def generate_route(self, request: Request) -> JSONResponse:
+        # TODO: Future support for async/batching/concurrency
+        if self.busy:
+            return JSONResponse({"error": "Worker is busy"}, status_code=503)
 
-            try:
-                data = await request.json()
-                # change to uuidv7 in python3.14
-                result = await self.handle_job(data, request_id=str(uuid.uuid4()))
-                return OrjsonResponse(result)
-            except Exception as e:
-                traceback.print_exc()
-                return JSONResponse({"error": str(e)}, status_code=500)
-            finally:
-                if FATAL_ERROR.exists():
-                    logger.error("FATAL_ERROR is set")
-                    os.kill(os.getpid(), signal.SIGTERM)
-                if SHUTDOWN_REQUESTED.exists():
-                    SHUTDOWN_NOW.touch()
-
-        return app
+        try:
+            data = await request.json()
+            # change to uuidv7 in python3.14
+            result = await self.handle_job(data, request_id=str(uuid.uuid4()))
+            return OrjsonResponse(result)
+        except Exception as e:
+            traceback.print_exc()
+            return JSONResponse({"error": str(e)}, status_code=500)
+        finally:
+            if FATAL_ERROR.exists():
+                logger.error("FATAL_ERROR is set")
+                os.kill(os.getpid(), signal.SIGTERM)
+            if SHUTDOWN_REQUESTED.exists():
+                SHUTDOWN_NOW.touch()
 
     async def run(self) -> None:
         parser = argparse.ArgumentParser(description="Sprocket worker")
@@ -444,7 +427,12 @@ class Runner:
         else:
             logger.info("Starting HTTP server only")
 
-        app = self.create_app()
+        routes = [
+            Route("/generate", self.generate_route, methods=["POST"]),
+            Route("/health", self.health_route),
+            Route("/metrics", self.metrics_route),
+        ]
+        app = Starlette(routes=routes, lifespan=self.lifespan)
         config = uvicorn.Config(
             app=app, host="0.0.0.0", port=args.port, log_level="info"
         )
@@ -452,7 +440,10 @@ class Runner:
         await server.serve()
 
 
-class Message(enum.StrEnum):
+# == mini IPC ==
+
+
+class Message(str, enum.Enum):
     SETUP_START = "setup_start"
     SETUP_ERROR = "setup_error"
     SETUP_DONE = "setup_done"
@@ -462,67 +453,68 @@ class Message(enum.StrEnum):
 
 
 @dataclasses.dataclass
-class ChildToWorkerMessage:
+class ChildMsg:
     rank: int
     type: Message
     arg: Any
 
 
+@dataclasses.dataclass
 class ChildRunner:
-    def __init__(self, sprocket: Sprocket, model_name: str) -> None:
-        self.sprocket = sprocket
-        self.model_name = model_name
-        self.busy = False
+    sprocket: Sprocket
+    model_name: str
+    rank: int
 
     def run(self) -> None:
-        local_rank = int(os.environ["LOCAL_RANK"])
-        print(f"Child runner started for local rank {local_rank}")
         try:
-            self.conn = multiprocessing.connection.Client(os.environ["SPROCKET_SOCKET"])
-            self.conn.send(ChildToWorkerMessage(local_rank, Message.SETUP_START, None))
+            conn = multiprocessing.connection.Client(os.environ["SPROCKET_SOCKET"])
+        except KeyError:
+            print("Please don't start sprocket processes in torchrun directly")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Child runner {self.rank} couldn't connect to parent: {repr(e)}")
+            raise
+
+        def send(m: Message, arg: Any = None) -> None:
+            conn.send(ChildMsg(self.rank, m, arg))
+
+        print(f"Child runner {self.rank} started")
+        try:
+            send(Message.SETUP_START)
             try:
                 self.sprocket.setup()
             except Exception as e:
-                self.conn.send(ChildToWorkerMessage(local_rank, Message.SETUP_ERROR, e))
+                send(Message.SETUP_ERROR, e)
                 return
-            self.conn.send(ChildToWorkerMessage(local_rank, Message.SETUP_DONE, None))
+            send(Message.SETUP_DONE)
             while not SHUTDOWN_REQUESTED.exists():
                 try:
-                    args = self.conn.recv()
-                except EOFError:
-                    print(f"Parent closed connection, rank {local_rank} exiting")
-                    # graceful exit
+                    args = conn.recv()
+                except EOFError:  # graceful exit
+                    print(f"Parent closed connection, rank {self.rank} exiting")
                     return
                 try:
                     output = self.sprocket.predict(args)
                 except Exception as e:
                     traceback.print_exc()
-                    # I sure hope that's picklable
-                    self.conn.send(ChildToWorkerMessage(local_rank, Message.ERROR, e))
+                    send(Message.ERROR, e)  # hope that error is picklable
                 else:
-                    self.conn.send(
-                        ChildToWorkerMessage(local_rank, Message.OUTPUT, output)
-                    )
+                    send(Message.OUTPUT, output)
                 finally:
-                    self.conn.send(
-                        ChildToWorkerMessage(local_rank, Message.PREDICT_DONE, None)
-                    )
-                    print(f"Rank {local_rank}: PREDICT_DONE sent", flush=True)
+                    send(Message.PREDICT_DONE)
+                    print(f"Rank {self.rank}: PREDICT_DONE sent", flush=True)
         except Exception as e:
-            print(f"Runner {local_rank} error: {repr(e)}")
-        print(
-            f"{local_rank} exited. shutdown requested: {SHUTDOWN_REQUESTED.exists()}, shutdown now: {SHUTDOWN_NOW.exists()}"
-        )
+            print(f"Child runner {self.rank} error: {repr(e)}")
+        state = f"shutdown requested: {SHUTDOWN_REQUESTED.exists()}, shutdown now: {SHUTDOWN_NOW.exists()}"
+        print(f"Child runner {self.rank} exited. {state}")
 
 
 class AsyncConnection:
-    def __init__(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        self.reader = reader
-        self.writer = writer
+    def __init__(self, r: StreamReader, w: StreamWriter) -> None:
+        self.reader = r
+        self.writer = w
 
-    async def recv(self) -> ChildToWorkerMessage:
+    async def recv(self) -> ChildMsg:
         data = await self.reader.readexactly(4)
         (size,) = struct.unpack("!i", data)
         if size == -1:
@@ -532,7 +524,7 @@ class AsyncConnection:
         data = await self.reader.readexactly(size)
         return pickle.loads(data)
 
-    async def send(self, message: ChildToWorkerMessage) -> None:
+    async def send(self, message: ChildMsg) -> None:
         data = pickle.dumps(message)
         size = len(data)
         if size < 2**31:
@@ -544,43 +536,37 @@ class AsyncConnection:
         await self.writer.drain()
 
 
-class ConnectionManager:
+class ChildServer:
     def __init__(self, num_processes: int) -> None:
         self.conns: list[AsyncConnection] = []
         self.connected = asyncio.Condition()
-        self.queue: asyncio.Queue[ChildToWorkerMessage] = asyncio.Queue()
+        self.queue: asyncio.Queue[ChildMsg] = asyncio.Queue()
         self.num_processes = num_processes
 
-    async def run(self, sprocket_socket: str) -> None:
-        async def start_connection(
-            r: asyncio.StreamReader, w: asyncio.StreamWriter
-        ) -> None:
-            c = AsyncConnection(r, w)
-            self.conns.append(c)
-            async with self.connected:
-                self.connected.notify_all()
-            while not SHUTDOWN_NOW.exists():
-                try:
-                    msg = await c.recv()
-                except (asyncio.exceptions.IncompleteReadError, EOFError) as e:
-                    if SHUTDOWN_NOW.exists() or SHUTDOWN_REQUESTED.exists():
-                        logger.info(
-                            "Child process disconnected during graceful shutdown"
-                        )
-                    else:
-                        logger.error(
-                            f"Child process unexpectedly disconnected. Did something terrible happen? {repr(e)}"
-                        )
-                        FATAL_ERROR.touch()
-                        exc = Exception("Worker crashed for this input!")
-                        msg = ChildToWorkerMessage(-1, Message.ERROR, exc)
-                        await self.queue.put(msg)
-                    return
-                await self.queue.put(msg)
+    async def child_connected_cb(self, r: StreamReader, w: StreamWriter) -> None:
+        c = AsyncConnection(r, w)
+        self.conns.append(c)
+        async with self.connected:
+            self.connected.notify_all()
+        while not SHUTDOWN_NOW.exists():
+            try:
+                msg = await c.recv()
+            except (asyncio.exceptions.IncompleteReadError, EOFError) as e:
+                if SHUTDOWN_NOW.exists() or SHUTDOWN_REQUESTED.exists():
+                    logger.info("Child process disconnected during graceful shutdown")
+                else:
+                    logger.error(
+                        f"Child process unexpectedly disconnected. Did something terrible happen? {repr(e)}"
+                    )
+                    FATAL_ERROR.touch()
+                    exc = Exception("Worker crashed for this input!")
+                    msg = ChildMsg(-1, Message.ERROR, exc)
+                    await self.queue.put(msg)
+                return
+            await self.queue.put(msg)
 
-        self.listener = await asyncio.start_unix_server(
-            start_connection, path=sprocket_socket
-        )
+    async def start(self, sprocket_socket: str) -> None:
+        await asyncio.start_unix_server(self.child_connected_cb, path=sprocket_socket)
 
     async def wait_for_connections(self) -> None:
         async with self.connected:
@@ -590,7 +576,7 @@ class ConnectionManager:
         for conn in self.conns:
             await conn.send(msg)
 
-    async def gather(self) -> "AsyncIterator[ChildToWorkerMessage]":
+    async def gather(self) -> AsyncIterator[ChildMsg]:
         while not SHUTDOWN_NOW.exists():
             yield await self.queue.get()
 
@@ -604,11 +590,10 @@ class TorchRunSprocket(AsyncSprocket):
             "--nnodes=1",
             f"--nproc-per-node={self.num_processes}",
         ]
-        # run torchrun
         os.environ["SPROCKET_SOCKET"] = sprocket_socket
 
-        self.connection_manager = ConnectionManager(self.num_processes)
-        await self.connection_manager.run(sprocket_socket)
+        self.child_server = ChildServer(self.num_processes)
+        await self.child_server.start(sprocket_socket)
 
         print("Starting worker processes")
         self.torchrun_proc = await asyncio.create_subprocess_exec(
@@ -621,47 +606,49 @@ class TorchRunSprocket(AsyncSprocket):
             close_fds=True,
         )
         print("Awaiting connections from workers")
-        await self.connection_manager.wait_for_connections()
+        await self.child_server.wait_for_connections()
         setup_starts = 0
         setup_dones = 0
         print("Awaiting worker setup")
-        async for msg in self.connection_manager.gather():
-            if msg.type == Message.SETUP_START:
-                setup_starts += 1
-            elif msg.type == Message.SETUP_DONE:
-                setup_dones += 1
-            elif msg.type == Message.SETUP_ERROR:
-                raise msg.arg
-            else:
-                raise ValueError(f"invalid msg {msg}")
+        async for msg in self.child_server.gather():
+            match msg.type:
+                case Message.SETUP_START:
+                    setup_starts += 1
+                case Message.SETUP_DONE:
+                    setup_dones += 1
+                case Message.SETUP_ERROR:
+                    raise msg.arg
+                case _:
+                    raise ValueError(f"invalid msg {msg}")
             if setup_starts == setup_dones == self.num_processes:
                 break
         print("Worker setup complete")
 
     async def predict(self, args: dict) -> dict:
-        await self.connection_manager.broadcast(args)
+        await self.child_server.broadcast(args)
         predict_dones = 0
         result = None
         err = None
-        async for msg in self.connection_manager.gather():
-            if msg.type == Message.ERROR:
-                err = msg.arg  # we will raise the last error we receive
-                if FATAL_ERROR.exists():
-                    # one of the ranks crashed - this job should not be retried and we need to restart immediately
-                    raise err
-            if msg.type == Message.OUTPUT:
-                if msg.arg:  # ignore ranks returning None
-                    result = msg.arg
-            elif msg.type == Message.PREDICT_DONE:
-                predict_dones += 1
+        async for msg in self.child_server.gather():
+            match msg.type:
+                case Message.ERROR:
+                    err = msg.arg  # we will raise the last error we receive
+                    if FATAL_ERROR.exists():
+                        # one of the ranks crashed
+                        # this job should not be retried and we need to restart immediately
+                        raise err
+                case Message.OUTPUT:
+                    if msg.arg:  # ignore ranks returning None
+                        result = msg.arg
+                case Message.PREDICT_DONE:
+                    predict_dones += 1
             if predict_dones == self.num_processes:
                 if err:
                     raise err
                 if result:
                     return result
+                raise Exception("all ranks returned None")
         raise Exception("shutting down")
-        # also handle upload
-        # self.update_job_status(msg)
 
     async def shutdown(self) -> None:
         # todo: timeout
@@ -679,11 +666,8 @@ def run(sprocket: Sprocket, name: str, use_torchrun: bool = False) -> None:
     SHUTDOWN_REQUESTED.unlink(missing_ok=True)
     FATAL_ERROR.unlink(missing_ok=True)
 
-    if "LOCAL_RANK" in os.environ:
-        if "SPROCKET_SOCKET" not in os.environ:
-            logger.error("Please don't start sprocket processes in torchrun directly")
-            sys.exit(1)
-        ChildRunner(sprocket, name).run()
+    if local_rank := os.getenv("LOCAL_RANK"):
+        ChildRunner(sprocket, name, int(local_rank)).run()
     elif use_torchrun:
         # sprocket is ignored in the parent process, TorchRunSprocket handles launching subprocesses that use the real sprocket
         # copy over the processor and warmup inputs to the sprocket that will actually be used

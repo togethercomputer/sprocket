@@ -1,9 +1,7 @@
-"""Minimal sprocket worker — just HTTP predict."""
+"""Minimal sprocket worker"""
 
 import os
-
 import sprocket
-
 
 class HelloWorld(sprocket.Sprocket):
     def setup(self) -> None:

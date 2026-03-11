@@ -10,19 +10,19 @@ dependencies = [
     "accelerate",
     "bitsandbytes",
     "safetensors",
-    "sprocket>=0.1.dev45"
+    "sprocket",
 ]
 
 [[tool.uv.index]]
 name = "together-pypi"
-url = "https://pypi.together.ai"
+url = "https://pypi.together.ai/"
 
 [tool.uv.sources]
 sprocket = { index = "together-pypi" }
 
 [tool.jig.image]
 python_version = "3.11"
-cmd = "python3 run.py"
+cmd = "python3 run.py --queue"
 auto_include_git = false
 copy = ["run.py"]
 
@@ -32,6 +32,7 @@ gpu_type = "h100-80gb"
 gpu_count = 1
 cpu = 4
 memory = 32
+storage = 20
 port = 8000
 min_replicas = 1
 max_replicas = 1
