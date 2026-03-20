@@ -4,7 +4,7 @@ version = "1.0.0"
 
 [tool.jig.deploy]
 # deploy an existing image instead of building
-image = "vllm/vllm-openai:v0.17.1"
+image = "vllm/vllm-openai:v0.16.0"
 
 description = "Test DeepSeek OCR2 input"
 gpu_type = "h100-80gb"
@@ -29,9 +29,11 @@ command = [
     "--limit-mm-per-prompt.video",
     "5",
     "--tensor-parallel-size",
-    "2"
+    "1",
+    "--logits_processors",
+    "vllm.model_executor.models.deepseek_ocr:NGramPerReqLogitsProcessor",
 ]
 
 [tool.jig.deploy.environment_variables]
-VLLM_LOGGING_LEVEL="debug"
-NCCL_DEBUG="debug"
+VLLM_LOGGING_LEVEL = "debug"
+NCCL_DEBUG = "debug"

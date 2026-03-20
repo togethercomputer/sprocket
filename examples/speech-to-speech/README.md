@@ -7,7 +7,7 @@ A real-time speech-to-speech application that processes audio input and responds
 1. Install client dependencies:
 
    ```bash
-   uv sync --group client
+   uv sync --no-default-groups --group client
    ```
 
 2. Set the admin API key:
