@@ -413,9 +413,6 @@ class Runner:
             help="Enable queue mode (default: HTTP server)",
         )
         parser.add_argument(
-            "--model", default="default", help="Model name for queue mode"
-        )
-        parser.add_argument(
             "--port", type=int, default=8000, help="Port for HTTP server mode"
         )
         args = parser.parse_args()
