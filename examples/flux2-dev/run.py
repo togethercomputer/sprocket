@@ -5,18 +5,18 @@ from io import BytesIO
 
 import sprocket
 import torch
-from diffusers import Flux2Pipeline
+from diffusers import Flux2KleinPipeline
 
 logging.basicConfig(level=logging.INFO)
 
 
 class Flux2Sprocket(sprocket.Sprocket):
     def setup(self) -> None:
-        model = "diffusers/FLUX.2-dev-bnb-4bit"
+        model = "black-forest-labs/FLUX.2-klein-9B"
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         logging.info(f"Loading Flux2 pipeline from {model} on {device}...")
-        pipe = Flux2Pipeline.from_pretrained(model, torch_dtype=torch.bfloat16)
+        pipe = Flux2KleinPipeline.from_pretrained(model, torch_dtype=torch.bfloat16)
         self.pipe = pipe.to(device)
         logging.info("Pipeline loaded successfully!")
 
@@ -24,8 +24,8 @@ class Flux2Sprocket(sprocket.Sprocket):
         prompt = args.get("prompt", "a cat")
 
         # Optional parameters with defaults
-        num_inference_steps = args.get("num_inference_steps", 28)
-        guidance_scale = args.get("guidance_scale", 4.0)
+        num_inference_steps = args.get("num_inference_steps", 4)
+        guidance_scale = args.get("guidance_scale", 1.0)
 
         # Generate image
         logging.info(f"Generating image for prompt: {prompt[:50]}...")

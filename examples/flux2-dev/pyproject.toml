@@ -2,13 +2,12 @@
 name = "sprocket-flux2-dev"
 version = "0.1.0"
 dependencies = [
-    "diffusers>=0.33.0",
-    "transformers>=4.44.0",
+    "diffusers>=0.33.1",
+    "transformers>=4.51.0",
     "torch>=2.0.0",
     "torchvision",
     "pillow",
     "accelerate",
-    "bitsandbytes",
     "safetensors",
     "sprocket",
 ]
@@ -32,7 +31,7 @@ gpu_type = "h100-80gb"
 gpu_count = 1
 cpu = 4
 memory = 32
-storage = 20
+storage = 50
 port = 8000
 min_replicas = 1
 max_replicas = 1
