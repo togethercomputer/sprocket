@@ -4,6 +4,10 @@
 
 First, make the project name in `pyproject.toml` unique.
 
+```bash
+sed -i '' "s/^name = \"deepseek-ocr2\"/name = \"deepseek-ocr2-$(date +%s)\"/" pyproject.toml
+```
+
 From within this directory, run `together beta jig deploy`.
 
 ## Inference Requests
@@ -15,6 +19,7 @@ Create your own request, or use the example request provided below after replaci
 ### Example Request
 
 **Request**
+
 ```
 curl --header "Authorization: Bearer $TOGETHER_API_KEY" \
   -H "Content-Type: application/json" \
@@ -42,6 +47,7 @@ curl --header "Authorization: Bearer $TOGETHER_API_KEY" \
 ```
 
 **Response**
+
 ```
 {
   "id": "chatcmpl-af755c4e61de3a2a",

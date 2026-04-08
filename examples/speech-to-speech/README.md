@@ -4,22 +4,22 @@ A real-time speech-to-speech application that processes audio input and responds
 
 ## How to Run
 
-1. Install client dependencies:
+1. Generate a unique deployment name and update `pyproject.toml`:
+
+   ```bash
+   sed -i '' "s/^name = \"speech-to-speech\"/name = \"speech-to-speech-$(date +%s)\"/" pyproject.toml
+   ```
+
+2. Install client dependencies:
 
    ```bash
    uv sync --no-default-groups --group client
    ```
 
-2. Set the admin API key:
-
-   ```bash
-   export ADMIN_API_KEY=<your_admin_api_key>
-   ```
-
 3. Deploy the application:
 
    ```bash
-   jig deploy
+   together beta jig deploy
    ```
 
 4. Run the client with your deployment ID:
