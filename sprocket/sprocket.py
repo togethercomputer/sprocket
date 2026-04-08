@@ -199,6 +199,7 @@ class Runner:
     def __init__(self, sprocket: "Sprocket | AsyncSprocket", model_name: str) -> None:
         self.queue_client = QueueClient(model_name)
         self.download_client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+        Path("inputs").mkdir(exist_ok=True)
         self.sprocket = sprocket
         # create InputOutputProcessor, potentially overriden by sprocket
         self.io_processor = sprocket.processor()

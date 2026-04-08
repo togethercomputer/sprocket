@@ -30,6 +30,8 @@ Issues = "https://github.com/togethercomputer/sprocket/issues"
 [dependency-groups]
 dev = [
     "ruff>=0.12.5",
+    "together @ git+https://github.com/togethercomputer/together-py@next",
+    "pytest",
 ]
 
 [tool.setuptools]
