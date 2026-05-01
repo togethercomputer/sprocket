@@ -1,0 +1,17 @@
+[project]
+name = "miso-tts"
+version = "0.1.0"
+
+[tool.jig]
+name = "miso-tts"
+
+[tool.jig.deploy]
+description = "Miso TTS deployment"
+gpu_type = "h100-80gb"
+gpu_count = 8
+memory = 256
+cpu = 8
+min_replicas = 1
+max_replicas = 1
+port = 8000
+health_check_path = ""
