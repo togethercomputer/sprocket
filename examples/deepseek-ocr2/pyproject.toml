@@ -13,7 +13,7 @@ cpu = 4
 memory = 64
 port = 8000
 min_replicas = 1
-max_replicas = 1
+max_replicas = 10
 command = [
     "vllm",
     "serve",
@@ -37,3 +37,8 @@ command = [
 [tool.jig.deploy.environment_variables]
 VLLM_LOGGING_LEVEL = "debug"
 NCCL_DEBUG = "debug"
+
+[tool.jig.deploy.autoscaling]
+metric = "CustomMetric"
+custom_metric_name = "vllm:num_requests_running"
+target = 4

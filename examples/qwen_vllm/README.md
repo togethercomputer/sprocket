@@ -13,19 +13,25 @@ instead of `jig submit`.
 
 ## How to Run
 
-1. Deploy:
+1. Generate a unique deployment name and update `pyproject.toml`:
+
+   ```bash
+   sed -i '' "s/^name = \"speech-to-speech\"/name = \"speech-to-speech-$(date +%s)\"/" pyproject.toml
+   ```
+
+2. Deploy:
 
    ```bash
    together beta jig deploy
    ```
 
-2. Get the endpoint URL:
+3. Get the endpoint URL:
 
    ```bash
    together beta jig endpoint
    ```
 
-3. Send a request:
+4. Send a request:
 
    ```bash
    curl $(together beta jig endpoint)/v1/chat/completions \

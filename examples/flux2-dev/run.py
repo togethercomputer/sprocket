@@ -1,6 +1,5 @@
 import base64
 import logging
-import os
 from io import BytesIO
 
 import sprocket
@@ -45,5 +44,4 @@ class Flux2Sprocket(sprocket.Sprocket):
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "sprocket-flux2-dev")
-    sprocket.run(Flux2Sprocket(), queue_name)
+    sprocket.run(Flux2Sprocket())

@@ -1,4 +1,3 @@
-import os
 from typing import Optional
 
 import torch
@@ -40,5 +39,4 @@ class WanSprocket(sprocket.Sprocket):
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "sprocket-wan2-1")
-    sprocket.run(WanSprocket(), queue_name, use_torchrun=True)
+    sprocket.run(WanSprocket(), use_torchrun=True)
