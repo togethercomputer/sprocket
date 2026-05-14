@@ -61,5 +61,4 @@ class KitchenSink(sprocket.Sprocket):
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "kitchen-sink")
-    sprocket.run(KitchenSink(), queue_name)
+    sprocket.run(KitchenSink())

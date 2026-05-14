@@ -120,5 +120,4 @@ class MidnightSprocket(sprocket.Sprocket):
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "midnight")
-    sprocket.run(MidnightSprocket(), queue_name)
+    sprocket.run(MidnightSprocket())

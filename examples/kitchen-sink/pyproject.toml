@@ -25,10 +25,10 @@ port = 8000
 min_replicas = 1
 max_replicas = 1
 
-[[tool.jig.volume_mounts]]
+[[tool.jig.deploy.volume_mounts]]
 name = "kitchen-sink-pantry"
 mount_path = "/pantry"
 
-[tool.jig.autoscaling]
+[tool.jig.deploy.autoscaling]
 metric = "QueueBacklogPerWorker"
 target = 1.01

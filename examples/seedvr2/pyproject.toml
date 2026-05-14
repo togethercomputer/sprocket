@@ -1,0 +1,54 @@
+[project]
+name = "sprocket-seedvr2-3b"
+version = "0.1.0"
+dependencies = [
+    "einops==0.7.0",
+    "torch==2.3.0",
+    "omegaconf==2.3.0",
+    "opencv-python==4.9.0.80",
+    "diffusers==0.29.1",
+    "rotary-embedding-torch==0.5.3",
+    "transformers==4.38.2",
+    "torchvision==0.18.0",
+    "mediapy==1.2.0",
+    "av",
+    "huggingface_hub",
+    "sprocket",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.1/flash_attn-2.5.9+cu121torch2.3-cp310-cp310-linux_x86_64.whl",
+    "apex @ https://huggingface.co/ByteDance-Seed/SeedVR2-3B/resolve/main/apex-0.1-cp310-cp310-linux_x86_64.whl",
+]
+
+[[tool.uv.index]]
+name = "together-pypi"
+url = "https://pypi.together.ai/"
+
+[tool.uv.sources]
+sprocket = { index = "together-pypi" }
+
+[tool.jig.image]
+python_version = "3.10"
+system_packages = ["git", "ffmpeg", "libgl1", "libglib2.0-0"]
+cmd = "python3 run_seedvr.py --queue"
+auto_include_git = false
+copy = ["run_seedvr.py"]
+run = [
+    "git clone https://github.com/ByteDance-Seed/SeedVR /app && git -C /app checkout e4de8c24441a67e1b7df56abea10645059bb1185",
+]
+
+[tool.jig.image.environment]
+PYTHONPATH = "/app"
+MASTER_ADDR = "127.0.0.1"
+MASTER_PORT = "29500"
+RANK = "0"
+WORLD_SIZE = "1"
+
+[tool.jig.deploy]
+description = "SeedVR2 restoration with Sprocket"
+gpu_type = "h100-80gb"
+gpu_count = 1
+cpu = 8
+memory = 64
+storage = 50
+port = 8000
+min_replicas = 1
+max_replicas = 1

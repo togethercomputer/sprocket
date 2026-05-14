@@ -1,4 +1,3 @@
-import os
 import base64
 import traceback
 
@@ -192,5 +191,4 @@ class StsSprocket(sprocket.Sprocket):
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "speech-to-speech-test")
-    sprocket.run(StsSprocket(), queue_name)
+    sprocket.run(StsSprocket())

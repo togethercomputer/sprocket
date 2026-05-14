@@ -1,7 +1,7 @@
 """Minimal sprocket worker"""
 
-import os
 import sprocket
+
 
 class HelloWorld(sprocket.Sprocket):
     def setup(self) -> None:
@@ -13,5 +13,4 @@ class HelloWorld(sprocket.Sprocket):
 
 
 if __name__ == "__main__":
-    queue_name = os.environ.get("TOGETHER_DEPLOYMENT_NAME", "hello-world")
-    sprocket.run(HelloWorld(), queue_name)
+    sprocket.run(HelloWorld())

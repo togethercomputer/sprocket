@@ -27,8 +27,8 @@ import orjson
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.routing import Route
 from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.routing import Route
 
 fmt = "{levelname} {module}:{lineno}: {message}"
 logging.basicConfig(level=logging.INFO, format=fmt, style="{")
@@ -76,15 +76,20 @@ class QueueClient:
     def __init__(self, model_name: str):
         self.model_name = model_name
         api_key = os.getenv("TOGETHER_API_KEY")
+        _transport = httpx.AsyncHTTPTransport(retries=2)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
         if VERSION:
             headers["x-worker-version"] = VERSION
-        self.client = httpx.AsyncClient(headers=headers, timeout=None)
+        # internal_client has together auth headers, do not use for external requests
+        self.internal_client = httpx.AsyncClient(headers=headers, timeout=None, transport=_transport)
         agent_version_string = f"{SPROCKET_VERSION} {model_name}/{VERSION or 'unknown'}"
-        self.client.headers["User-Agent"] += agent_version_string
+        self.internal_client.headers["User-Agent"] += agent_version_string
+
+        # external_client does not have together auth headers, safe to use for external requests
+        self.external_client = httpx.AsyncClient(timeout=None, transport=_transport)
 
     async def get_job(self, timeout: Optional[int] = None) -> dict:
         params = {"timeout": "5s", "model": self.model_name, "hostname": HOSTNAME}
@@ -95,7 +100,7 @@ class QueueClient:
             try:
                 logger.info(f"waiting for job from remote queue {self.model_name}")
                 headers = {"x-idle-time": str(time.time() - start_time)}
-                response = await self.client.get(
+                response = await self.internal_client.get(
                     RETRIEVE_URL, headers=headers, params=params
                 )
                 response.raise_for_status()
@@ -126,7 +131,7 @@ class QueueClient:
         logger.info(f"updating remote job status: {data}")
         for i in range(3):
             try:
-                response = await self.client.post(UPDATE_URL, json=data)
+                response = await self.internal_client.post(UPDATE_URL, json=data)
                 if response.status_code == 200:
                     return True
                 response.raise_for_status()
@@ -138,12 +143,17 @@ class QueueClient:
     async def upload_file(self, request_id: str, path: FileOutput) -> str:
         try:
             req = {"filename": request_id + "-" + path.name}
-            resp = await self.client.post(UPLOAD_URL, json=req)
+            resp = await self.internal_client.post(UPLOAD_URL, json=req)
+            resp.raise_for_status()
+
             url = resp.json()["upload_url"]["url"]
-            await self.client.put(url, content=path.open("rb").read())
-        except Exception:
-            traceback.print_exc()
-            raise
+            put_resp = await self.external_client.put(url, content=path.read_bytes())
+            put_resp.raise_for_status()
+        except Exception as e:
+            err_msg = f"upload-request failed: {repr(e)}"
+            logger.error(err_msg)
+            raise RuntimeError(err_msg) from e
+
         return f"{API_BASE}/v1/storage/{request_id}-{path.name}"
 
 
@@ -199,6 +209,7 @@ class Runner:
     def __init__(self, sprocket: "Sprocket | AsyncSprocket", model_name: str) -> None:
         self.queue_client = QueueClient(model_name)
         self.download_client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+        Path("inputs").mkdir(exist_ok=True)
         self.sprocket = sprocket
         # create InputOutputProcessor, potentially overriden by sprocket
         self.io_processor = sprocket.processor()
@@ -658,7 +669,17 @@ class TorchRunSprocket(AsyncSprocket):
 PROCESS_START_TIME = time.time()
 
 
-def run(sprocket: Sprocket, name: str, use_torchrun: bool = False) -> None:
+def run(
+    sprocket: Sprocket, name: Optional[str] = None, use_torchrun: bool = False
+) -> None:
+    if name is None:
+        name = os.environ.get("TOGETHER_DEPLOYMENT_NAME")
+    if not name:
+        raise ValueError(
+            "No deployment name found. The deployment name is automatically injected when running on the Together platform. "
+            "If running locally, pass `name` to sprocket.run() or set the TOGETHER_DEPLOYMENT_NAME environment variable."
+        )
+
     SHUTDOWN_NOW.unlink(missing_ok=True)
     SHUTDOWN_REQUESTED.unlink(missing_ok=True)
     FATAL_ERROR.unlink(missing_ok=True)
