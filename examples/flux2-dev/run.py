@@ -12,11 +12,9 @@ logging.basicConfig(level=logging.INFO)
 class Flux2Sprocket(sprocket.Sprocket):
     def setup(self) -> None:
         model = "black-forest-labs/FLUX.2-klein-9B"
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        logging.info(f"Loading Flux2 pipeline from {model} on {device}...")
-        pipe = Flux2KleinPipeline.from_pretrained(model, torch_dtype=torch.bfloat16)
-        self.pipe = pipe.to(device)
+        self.pipe = Flux2KleinPipeline.from_pretrained(
+            model, torch_dtype=torch.bfloat16
+        ).to("cuda")
         logging.info("Pipeline loaded successfully!")
 
     def predict(self, args: dict) -> dict:

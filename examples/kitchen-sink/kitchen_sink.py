@@ -12,14 +12,57 @@ import logging
 import os
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 import sprocket
+from sprocket import sprocket as _sp
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 PANTRY = Path("/pantry")
+
+
+# --- diagnostics: instrument FileOutput uploads to pinpoint transient failures ---
+# kitchen_sink.py is copied into the worker image directly (sprocket is
+# pip-installed), so this ships on the next image build without a sprocket
+# release. We wrap QueueClient.upload_file — which runs in THIS worker process,
+# so it sees the *actual* failing request, not a re-connection — to record which
+# hop broke (presigned POST vs Tigris PUT), at which layer (TCP connect vs TLS
+# handshake), and the underlying cause, when uploads intermittently ConnectError.
+_orig_upload_file = _sp.QueueClient.upload_file
+
+
+def _cause_chain(exc: BaseException) -> str:
+    chain, cur = [], exc.__cause__ or exc.__context__
+    while cur is not None:
+        chain.append(f"{type(cur).__module__}.{type(cur).__name__}({cur})")
+        cur = cur.__cause__ or cur.__context__
+    return " <- ".join(chain) or "(none)"
+
+
+async def _instrumented_upload_file(self, request_id, path):
+    start = time.time()
+    try:
+        return await _orig_upload_file(self, request_id, path)
+    except Exception as e:
+        # httpx attaches the in-flight request to the exception, so this is the
+        # exact request that failed (full presigned URL → host + which hop).
+        req = getattr(e, "request", None)
+        failing = f"{req.method} {req.url}" if req is not None else "(no request on exception)"
+        logger.error(
+            "FileOutput upload FAILED after %.1fs for %s-%s\n"
+            "  failing request: %s\n"
+            "  error: %r\n"
+            "  cause chain: %s\n%s",
+            time.time() - start, request_id, path.name, failing,
+            e, _cause_chain(e), traceback.format_exc(),
+        )
+        raise
+
+
+_sp.QueueClient.upload_file = _instrumented_upload_file
 
 
 class KitchenSink(sprocket.Sprocket):

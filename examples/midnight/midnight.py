@@ -36,12 +36,12 @@ class MidnightSprocket(sprocket.Sprocket):
             [
                 v2.Resize(224),
                 v2.CenterCrop(224),
-                v2.ToTensor(),
+                v2.ToDtype(torch.float32, scale=True),
                 v2.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
             ]
         )
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = "cuda"
         self.model.to(self.device)
 
         self.http_client = httpx.Client(timeout=30.0)
