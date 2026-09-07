@@ -373,7 +373,13 @@ class Runner:
         resume = d / "RESUME"
         while not resume.exists():
             await asyncio.sleep(0.1)
-        logger.info("gpusnap: RESUME received; proceeding to serve")
+        # The tool records whether the physical GPUs moved vs dump time (a cross-GPU retarget). Expose it
+        # as GPUSNAP_GPUS_CHANGED so a multi-GPU (TorchRun) worker reinitialises its process group / NCCL
+        # ONLY when the GPUs actually changed — an in-place restore keeps its still-valid communicators.
+        gc = d / "GPUS_CHANGED"
+        changed = gc.read_text().strip() != "0" if gc.exists() else True
+        os.environ["GPUSNAP_GPUS_CHANGED"] = "1" if changed else "0"
+        logger.info(f"gpusnap: RESUME received (gpus_changed={changed}); proceeding to serve")
 
     @contextlib.asynccontextmanager
     async def lifespan(self, _: Starlette) -> AsyncIterator[None]:
