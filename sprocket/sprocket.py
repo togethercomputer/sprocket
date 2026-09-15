@@ -366,6 +366,32 @@ class Runner:
             SHUTDOWN_REQUESTED.touch()
             sys.exit(0)
 
+    async def gpusnap_warm_pause(self) -> None:
+        """gpusnap snapshot hook. When this worker is being warmed to build a snapshot (GPUSNAP_WARM set to
+        a directory), pause here — after setup()+warmup, so the model is loaded and JIT-warm, but BEFORE
+        the queue worker claims any real job and before /health goes green — signal the snapshotter that we
+        are warm (WARM_READY), and block until it restores us and writes RESUME. This guarantees a snapshot
+        never captures (and then loses) a claimed job, and that a restored worker resumes cleanly into
+        serving. On a normal boot GPUSNAP_WARM is unset and this is a no-op, so non-gpusnap behaviour is
+        unchanged. Works for both queue and HTTP mode and for TorchRun (multi-GPU) workers."""
+        warm_dir = os.getenv("GPUSNAP_WARM")
+        if not warm_dir:
+            return
+        d = Path(warm_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "WARM_READY").touch()
+        logger.info(f"gpusnap: warm (setup+warmup done); paused pre-queue, signalled WARM_READY in {d}")
+        resume = d / "RESUME"
+        while not resume.exists():
+            await asyncio.sleep(0.1)
+        # The tool records whether the physical GPUs moved vs dump time (a cross-GPU retarget). Expose it
+        # as GPUSNAP_GPUS_CHANGED so a multi-GPU (TorchRun) worker reinitialises its process group / NCCL
+        # ONLY when the GPUs actually changed — an in-place restore keeps its still-valid communicators.
+        gc = d / "GPUS_CHANGED"
+        changed = gc.read_text().strip() != "0" if gc.exists() else True
+        os.environ["GPUSNAP_GPUS_CHANGED"] = "1" if changed else "0"
+        logger.info(f"gpusnap: RESUME received (gpus_changed={changed}); proceeding to serve")
+
     @contextlib.asynccontextmanager
     async def lifespan(self, _: Starlette) -> AsyncIterator[None]:
         if isinstance(self.sprocket, AsyncSprocket):
@@ -373,6 +399,8 @@ class Runner:
         else:
             self.sprocket.setup()
         await self.maybe_run_warmup()
+        # gpusnap: pause here (warm, pre-queue) while a snapshot is taken; no-op on a normal boot.
+        await self.gpusnap_warm_pause()
         if self.queue_mode:
             asyncio.create_task(self.run_queue_worker())
         self.healthy = True
