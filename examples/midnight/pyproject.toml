@@ -1,7 +1,14 @@
 [project]
 name = "kaiko-midnight-patch"
 version = "0.1.0"
-dependencies = ["torch", "transformers", "torchvision", "pillow", "sprocket"]
+requires-python = ">=3.11"
+dependencies = [
+    "torch==2.6.0",
+    "transformers==4.57.1",
+    "torchvision==0.21.0",
+    "pillow==12.2.0",
+    "sprocket==0.1.4",
+]
 
 [[tool.uv.index]]
 name = "together-pypi"
@@ -22,7 +29,7 @@ run = [
 ]
 
 [tool.jig.image.environment]
-MODEL_PATH="kaiko-ai/midnight"
+MODEL_PATH = "kaiko-ai/midnight"
 
 [tool.jig.deploy]
 description = "Midnight model for patches"

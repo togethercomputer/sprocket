@@ -1,15 +1,16 @@
 [project]
 name = "sprocket-flux2-dev"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = [
-    "diffusers>=0.33.1",
-    "transformers>=4.51.0",
-    "torch>=2.0.0",
-    "torchvision",
-    "pillow",
-    "accelerate",
-    "safetensors",
-    "sprocket",
+    "diffusers==0.37.1",
+    "transformers==4.57.1",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "pillow==12.2.0",
+    "accelerate==1.13.0",
+    "safetensors==0.7.0",
+    "sprocket==0.1.4",
 ]
 
 [[tool.uv.index]]

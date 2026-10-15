@@ -16,7 +16,7 @@ instead of `jig submit`.
 1. Generate a unique deployment name and update `pyproject.toml`:
 
    ```bash
-   sed -i '' "s/^name = \"speech-to-speech\"/name = \"speech-to-speech-$(date +%s)\"/" pyproject.toml
+   sed -i '' "s/^name = \"qwen25-vl\"/name = \"qwen25-vl-$(date +%s)\"/" pyproject.toml
    ```
 
 2. Deploy:

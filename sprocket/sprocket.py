@@ -5,6 +5,7 @@ import dataclasses
 import enum
 import importlib.metadata
 import logging
+import mimetypes
 import multiprocessing.connection
 import os
 import pickle
@@ -19,7 +20,7 @@ import traceback
 import uuid
 from asyncio import StreamReader, StreamWriter
 from pathlib import Path, PosixPath
-from typing import Any, AsyncIterator, Optional, Type
+from typing import Any, AsyncIterator, Callable, Optional, Type
 from urllib.parse import urlparse
 
 import httpx
@@ -29,6 +30,9 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
+
+if sys.version_info < (3, 13):
+    mimetypes.add_type("image/webp", ".webp")
 
 fmt = "{levelname} {module}:{lineno}: {message}"
 logging.basicConfig(level=logging.INFO, format=fmt, style="{")
@@ -40,6 +44,10 @@ if not API_BASE.startswith("https://"):
 RETRIEVE_URL = f"{API_BASE}/internal/v1/queue/retrieve"
 UPDATE_URL = f"{API_BASE}/internal/v1/videos/status"
 UPLOAD_URL = f"{API_BASE}/v1/storage/upload-request"
+
+UPLOAD_MAX_ATTEMPTS = 4
+_RETRYABLE_UPLOAD_STATUS = frozenset({500, 502, 503, 504})
+UPLOAD_CONNECT_TIMEOUT = 10.0 # Without this (timeout=None), request hangs on the OS TCP timeout (~60s) per attempt.
 
 # make sure we can complete or time out jobs before we get killed
 MAX_ASYNC_PREDICT_TIME = int(os.getenv("TERMINATION_GRACE_PERIOD_SECONDS", "300")) - 1
@@ -77,6 +85,7 @@ class QueueClient:
         self.model_name = model_name
         api_key = os.getenv("TOGETHER_API_KEY")
         _transport = httpx.AsyncHTTPTransport(retries=2)
+        _timeout = httpx.Timeout(None, connect=UPLOAD_CONNECT_TIMEOUT)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -84,12 +93,14 @@ class QueueClient:
         if VERSION:
             headers["x-worker-version"] = VERSION
         # internal_client has together auth headers, do not use for external requests
-        self.internal_client = httpx.AsyncClient(headers=headers, timeout=None, transport=_transport)
+        self.internal_client = httpx.AsyncClient(
+            headers=headers, timeout=_timeout, transport=_transport
+        )
         agent_version_string = f"{SPROCKET_VERSION} {model_name}/{VERSION or 'unknown'}"
         self.internal_client.headers["User-Agent"] += agent_version_string
 
         # external_client does not have together auth headers, safe to use for external requests
-        self.external_client = httpx.AsyncClient(timeout=None, transport=_transport)
+        self.external_client = httpx.AsyncClient(timeout=_timeout, transport=_transport)
 
     async def get_job(self, timeout: Optional[int] = None) -> dict:
         params = {"timeout": "5s", "model": self.model_name, "hostname": HOSTNAME}
@@ -141,20 +152,35 @@ class QueueClient:
         return False
 
     async def upload_file(self, request_id: str, path: FileOutput) -> str:
-        try:
-            req = {"filename": request_id + "-" + path.name}
-            resp = await self.internal_client.post(UPLOAD_URL, json=req)
-            resp.raise_for_status()
+        filename = f"{request_id}-{path.name}"
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        stage = "presigned-request"  # which hop failed, for error reporting
+        for attempt in range(1, UPLOAD_MAX_ATTEMPTS + 1):
+            try:
+                stage = "presigned-request"
+                resp = await self.internal_client.post(UPLOAD_URL, json={"filename": filename})
+                resp.raise_for_status()
+                upload_info = resp.json()["upload_url"]
 
-            url = resp.json()["upload_url"]["url"]
-            put_resp = await self.external_client.put(url, content=path.read_bytes())
-            put_resp.raise_for_status()
-        except Exception as e:
-            err_msg = f"upload-request failed: {repr(e)}"
-            logger.error(err_msg)
-            raise RuntimeError(err_msg) from e
-
-        return f"{API_BASE}/v1/storage/{request_id}-{path.name}"
+                stage = "storage-upload"
+                headers = {"Content-Type": content_type} | (upload_info.get("headers") or {})
+                put_resp = await self.external_client.put(
+                    upload_info["url"], content=path.read_bytes(), headers=headers
+                )
+                put_resp.raise_for_status()
+                return f"{API_BASE}/v1/storage/{filename}"
+            except Exception as e:
+                retryable = isinstance(e, httpx.TransportError) or (
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code in _RETRYABLE_UPLOAD_STATUS
+                )
+                if attempt == UPLOAD_MAX_ATTEMPTS or not retryable:
+                    err_msg = f"{stage} failed for {filename}: {repr(e)}"
+                    logger.error(err_msg)
+                    raise RuntimeError(err_msg) from e
+                backoff = min(2 ** (attempt - 1), 8)  # 1, 2, 4, 8s
+                logger.warning(f"{stage} failed for {filename}, retrying in {backoff}s: {repr(e)}")
+                await asyncio.sleep(backoff)
 
 
 class OrjsonResponse(JSONResponse):
@@ -206,7 +232,7 @@ class AsyncSprocket:
 
 
 class Runner:
-    def __init__(self, sprocket: "Sprocket | AsyncSprocket", model_name: str) -> None:
+    def __init__(self, sprocket: "Sprocket | AsyncSprocket", model_name: str, predict_path: str) -> None:
         self.queue_client = QueueClient(model_name)
         self.download_client = httpx.AsyncClient(timeout=None, follow_redirects=True)
         Path("inputs").mkdir(exist_ok=True)
@@ -216,6 +242,7 @@ class Runner:
         self.busy = False
         self.queue_mode = False
         self.healthy = False
+        self.predict_path = predict_path
 
     async def download_file(self, url: str) -> Path:
         dst = Path("inputs/" + os.path.basename(urlparse(url).path))
@@ -436,10 +463,14 @@ class Runner:
             logger.info("Starting HTTP server only")
 
         routes = [
-            Route("/generate", self.generate_route, methods=["POST"]),
             Route("/health", self.health_route),
             Route("/metrics", self.metrics_route),
+            Route(self.predict_path, self.generate_route, methods=["POST"]),
         ]
+
+        if len({r.path for r in routes}) != len(routes):
+            raise ValueError(f"predict_path {self.predict_path!r} collides with a reserved route")
+
         app = Starlette(routes=routes, lifespan=self.lifespan)
         config = uvicorn.Config(
             app=app, host="0.0.0.0", port=args.port, log_level="info"
@@ -670,7 +701,12 @@ PROCESS_START_TIME = time.time()
 
 
 def run(
-    sprocket: Sprocket, name: Optional[str] = None, use_torchrun: bool = False
+    sprocket: Sprocket | Callable[[], Sprocket],
+    name: Optional[str] = None,
+    use_torchrun: bool = False,
+    predict_path: Optional[str] = None,
+    io_processor: Type[InputOutputProcessor] | None = None,
+    warmup_inputs: list | None = None,
 ) -> None:
     if name is None:
         name = os.environ.get("TOGETHER_DEPLOYMENT_NAME")
@@ -680,17 +716,38 @@ def run(
             "If running locally, pass `name` to sprocket.run() or set the TOGETHER_DEPLOYMENT_NAME environment variable."
         )
 
+
+    predict_path = predict_path or os.environ.get("SPROCKET_PREDICT_PATH") or "/generate"
+
     SHUTDOWN_NOW.unlink(missing_ok=True)
     SHUTDOWN_REQUESTED.unlink(missing_ok=True)
     FATAL_ERROR.unlink(missing_ok=True)
 
+    # run args win; for sprocket instance fall back to its own attrs
+    if io_processor is None and not callable(sprocket):
+        io_processor = sprocket.processor
+    if warmup_inputs is None and not callable(sprocket):
+        warmup_inputs = sprocket.warmup_inputs
+
+    # `sprocket` may be a Sprocket instance or a zero-arg factory returning one. The factory
+    # is constructed only in the worker / single-process branches, so its heavy imports never
+    # run in the torchrun parent.
+    def _resolve() -> "Sprocket":
+        obj = sprocket() if callable(sprocket) else sprocket
+        if io_processor is not None:
+            obj.processor = io_processor
+        if warmup_inputs is not None:
+            obj.warmup_inputs = warmup_inputs
+        return obj
+
     if local_rank := os.getenv("LOCAL_RANK"):
-        ChildRunner(sprocket, name, int(local_rank)).run()
+        ChildRunner(_resolve(), name, int(local_rank)).run()
     elif use_torchrun:
-        # sprocket is ignored in the parent process, TorchRunSprocket handles launching subprocesses that use the real sprocket
-        # copy over the processor and warmup inputs to the sprocket that will actually be used
-        TorchRunSprocket.processor = sprocket.processor
-        TorchRunSprocket.warmup_inputs = sprocket.warmup_inputs
-        asyncio.run(Runner(TorchRunSprocket(), name).run())
+        # sprocket is ignored in the parent process; TorchRunSprocket launches/runs the workers.
+        if io_processor is not None:
+            TorchRunSprocket.processor = io_processor
+        if warmup_inputs is not None:
+            TorchRunSprocket.warmup_inputs = warmup_inputs
+        asyncio.run(Runner(TorchRunSprocket(), name, predict_path).run())
     else:
-        asyncio.run(Runner(sprocket, name).run())
+        asyncio.run(Runner(_resolve(), name, predict_path).run())

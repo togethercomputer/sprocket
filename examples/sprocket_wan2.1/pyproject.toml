@@ -1,19 +1,20 @@
 [project]
 name = "sprocket-wan2-1"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = [
     "diffusers==0.33.0",
-    "transformers>=4.44.0",
-    "para_attn",
-    "ftfy",
-    "accelerate",
-    "einops",
-    "omegaconf",
-    "pillow",
-    "ffmpeg-python",
-    "opencv-python",
-    "torch",
-    "sprocket",
+    "transformers==4.49.0",
+    "para_attn==0.3.38",
+    "ftfy==6.3.1",
+    "accelerate==1.13.0",
+    "einops==0.8.2",
+    "omegaconf==2.3.0",
+    "pillow==12.2.0",
+    "ffmpeg-python==0.2.0",
+    "opencv-python==4.13.0.92",
+    "torch==2.6.0",
+    "sprocket==0.1.4",
 ]
 
 [[tool.uv.index]]
@@ -29,6 +30,9 @@ system_packages = ["libgl1", "libglx-mesa0", "ffmpeg"]
 cmd = "python3 run_wan.py --queue"
 auto_include_git = false
 copy = ["run_wan.py"]
+
+[tool.jig.deploy.environment_variables]
+TERMINATION_GRACE_PERIOD_SECONDS = "1800"
 
 [tool.jig.deploy]
 description = "Wan2.1 Video Generation with Sprocket"
