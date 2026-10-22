@@ -30,7 +30,8 @@ Issues = "https://github.com/togethercomputer/sprocket/issues"
 [dependency-groups]
 dev = [
     "ruff>=0.12.5",
-    "together @ git+https://github.com/togethercomputer/together-py@next" ,
+    # pillow (via together) has no fixed release for Python 3.10; keep it out of the 3.10 dev env
+    "together @ git+https://github.com/togethercomputer/together-py@next ; python_full_version >= '3.11'",
     "pytest",
 ]
 
@@ -39,3 +40,7 @@ packages = ["sprocket"]
 py-modules = ["jig"]
 
 [tool.setuptools_scm]
+
+[tool.uv]
+# together@next declares cyclopts>=4.6.0, but its CLI (jig) fails to start with cyclopts 5.x
+constraint-dependencies = ["cyclopts<5"]
